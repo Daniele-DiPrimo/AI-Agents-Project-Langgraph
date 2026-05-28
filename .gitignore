@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Ambienti virtuali
+.venv/
+venv/
+env/
+
+# Segreti (FONDAMENTALE)
+.env
+
+# Cache di Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Database e Memoria di LangGraph Studio
+.langgraph/
+*.sqlite
+*.db
+
+# File di sistema
+.DS_Store

@@ -1,0 +1,19 @@
+[project]
+name = "uniagent2-0"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "arxiv>=4.0.0",
+    "langchain-core>=1.4.0",
+    "langchain-experimental>=0.4.2",
+    "langchain-groq>=1.1.2",
+    "langchain-tavily>=0.2.18",
+    "langgraph>=1.2.2",
+    "langgraph-api>=0.8.7",
+    "langgraph-cli[inmem]>=0.4.26",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    "tavily-python>=0.7.24",
+]
