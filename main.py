@@ -75,5 +75,5 @@ def run_blog_system(prompt: str):
          print("\n❌ Articolo rifiutato. (Usa LangGraph Studio per ricaricare il nodo e fornire feedback).")
 
 if __name__ == "__main__":
-    test_prompt = "Scrivi un articolo di ricerca sugli impatti ambientali dell'AI"
+    test_prompt = "Scrivi un articolo di Teoria sulle liste in Rust"
     run_blog_system(test_prompt)

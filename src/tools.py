@@ -68,9 +68,17 @@ def search_semantic_scholar(giustificazione: str, query: str) -> str:
         "limit": 1, # Bastano 2 paper per non esaurire i token
         "fields": "title,abstract,authors,year,url" # Estraiamo solo la "polpa"
     }
-    
+
+    headers = {}
+    api_key= os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+
+    if api_key: 
+        headers["x-api-key"] = api_key
+    else:
+        headers["User-Agent"] = "UniAgent2.0"
+
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
         data = response.json()
         
