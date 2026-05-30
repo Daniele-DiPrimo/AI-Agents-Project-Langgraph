@@ -3,6 +3,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 from src.state import BlogState
 from src.tools import blog_tools, blog_tools_wout_done
+import json
+from langgraph.types import interrupt, Command
 
 # --- 1. SETUP MODELLI GROQ ---
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
@@ -167,3 +169,81 @@ def exercises_writer_node(state: BlogState):
     response = react_llm.invoke(messages)
     
     return {"messages": [response]}
+
+from langgraph.types import interrupt, Command
+from langgraph.graph import END
+
+def human_review_node(state: BlogState) -> Command:
+    """Nodo corazzato che mette in pausa il grafo per far revisionare l'articolo all'utente.
+    Resiste a input errati, stringhe non formattate e JSON rotti da LangGraph Studio."""
+    
+    # 1. Recuperiamo l'articolo appena scritto
+    ultimo_messaggio = state["messages"][-1].content
+    
+    # 2. Creiamo il pacchetto da inviare all'esterno (al terminale o a LangGraph Studio)
+    richiesta_revisione = {
+        "azione": "revisione_articolo",
+        "anteprima": ultimo_messaggio[:500] + "...\n[Testo troncato per l'anteprima]"
+    }
+    
+    # 3. 🛑 IL GRAFO SI CONGELA QUI! 🛑
+    raw_resume_value = interrupt([richiesta_revisione])
+    
+    # --- 🛡️ INIZIO BLOCCO DI SICUREZZA (LA CORAZZA) 🛡️ ---
+    # A. Estraiamo il valore se è nascosto in una lista
+    if isinstance(raw_resume_value, list) and len(raw_resume_value) > 0:
+        risposta_umana = raw_resume_value[0]
+    else:
+        risposta_umana = raw_resume_value
+
+    # B. Se la UI (o l'utente) ha mandato una stringa di testo invece di un JSON
+    if isinstance(risposta_umana, str):
+        try:
+            # Proviamo a convertirla in un dizionario formattato
+            risposta_umana = json.loads(risposta_umana)
+        except json.JSONDecodeError:
+            # Se la conversione fallisce (es. l'utente ha scritto testo libero nel box)
+            # Analizziamo la stringa manualmente per non far crashare il nodo
+            testo_libero = risposta_umana.lower()
+            if "approva" in testo_libero:
+                risposta_umana = {"tipo": "approva"}
+            elif "modifica" in testo_libero:
+                # Salviamo l'intero testo come feedback
+                risposta_umana = {"tipo": "modifica", "feedback": risposta_umana}
+            else:
+                risposta_umana = {"tipo": "annulla"}
+    
+    # C. Se alla fine di tutto NON è ancora un dizionario, apriamo il paracadute
+    if not isinstance(risposta_umana, dict):
+        risposta_umana = {"tipo": "annulla"}
+    # --- 🛡️ FINE BLOCCO DI SICUREZZA 🛡️ ---
+
+    # 4. IL GRAFO SI SCONGELA E PRENDE UNA DECISIONE SICURA
+    # Usiamo .get() così se la chiave non esiste ci restituisce "annulla" invece di un errore
+    azione = risposta_umana.get("tipo", "annulla")
+
+    if azione == "approva":
+        # Se approva, andiamo diretti alla fine
+        return Command(goto=END)
+        
+    elif azione == "modifica":
+        # Recuperiamo il feedback (se per caso l'utente non l'ha inserito, mettiamo un testo di default)
+        feedback_testo = risposta_umana.get("feedback", "L'utente ha richiesto una revisione generale senza specificare dettagli.")
+        
+        feedback_msg = {
+            "role": "user", 
+            "content": f"L'utente ha rifiutato la bozza e ha richiesto questa modifica: {feedback_testo}. Riscrivi l'articolo tenendone conto."
+        }
+        
+        # Scegliamo dove rimandarlo in base all'intent originale
+        intent = state.get("intent", "").lower()
+        ritorno = "exercises_writer" if intent == "esercizio" else "writer"
+        
+        return Command(
+            goto=ritorno, 
+            update={"messages": [feedback_msg]} # Aggiorniamo lo stato con il feedback
+        )
+        
+    else:
+        # Fallback (es. l'utente ha inviato 'annulla' o dati incomprensibili)
+        return Command(goto=END)
