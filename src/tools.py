@@ -101,14 +101,5 @@ def search_semantic_scholar(giustificazione: str, query: str) -> str:
     except Exception as e:
         return f"Errore durante la ricerca accademica: {str(e)}"
 
-@tool(args_schema=DoneSchema)
-def done(giustificazione:str, ready: str) -> str:
-    """
-    Chiama questo tool quando hai finito la ricerca.
-    - giustificazione: Spiega perché ritieni di avere tutti i dati necessari per l'articolo.
-    - ready: Scrivi "completato".
-    """
-    return "Ricerca completata. Passo alla stesura."
 
-blog_tools_wout_done = [search_semantic_scholar, search_tool]
-blog_tools = [search_tool, python_tool, search_semantic_scholar, done]
+blog_tools = [search_semantic_scholar, search_tool]

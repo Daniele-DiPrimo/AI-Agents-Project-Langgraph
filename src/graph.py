@@ -1,69 +1,44 @@
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
 from src.state import BlogState
-from src.agents import classifier_node, reasoner_node, writer_node, exercises_writer_node, human_review_node
-from src.tools import blog_tools
+from src.agents import classifier_node, writer_node, exercises_writer_node, human_review_node
+from src.reasoner_graph import reasoner_subgraph
 
-def route_after_reasoner(state: BlogState):
+def route_to_writers(state: BlogState):
     """
-    Router personalizzato che intercetta il tool 'done' per terminare il grafo.
+    Smista il flusso verso lo scrittore corretto. 
+    Viene chiamata SOLO quando il reasoner_subgraph ha concluso 
+    tutti i suoi loop interni di ricerca e valutazione.
     """
-    last_message = state["messages"][-1]
     intent = state.get("intent", "").lower()
     
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        for tool_call in last_message.tool_calls:
-            # Se l'agente ha deciso di chiamare 'done', usciamo dal loop
-            if tool_call["name"] == "done":
-                if intent == "esercizio":
-                    return "exercises_writer"
-                return "writer"
-                
-        # Se ha chiamato qualsiasi altro tool (es. tavily, arxiv), andiamo al nodo tools
-        return "tools"
- 
-    # --- FALLBACK DI SICUREZZA ---
-    # Se per caso l'LLM smette di chiamare tool e scrive testo libero
-    # smistiamo comunque al nodo corretto per non far bloccare il grafo.
     if intent == "esercizio":
         return "exercises_writer"
     
+    # Fallback/Default: se è teoria o altro, va allo scrittore classico
     return "writer"
+
 
 builder = StateGraph(BlogState)
 
 builder.add_node("classifier", classifier_node)
-builder.add_node("reasoner", reasoner_node)
 builder.add_node("writer", writer_node)
 builder.add_node("exercises_writer", exercises_writer_node)
 builder.add_node("human_review", human_review_node)
+builder.add_node("reasoner_subgraph", reasoner_subgraph)
 
-# Al ToolNode passiamo TUTTI i tool TRANNE 'done', 
-# perché 'done' non deve mai essere eseguito fisicamente
-executable_tools = [t for t in blog_tools if t.name != "done"]
-builder.add_node("tools", ToolNode(executable_tools))
 
 builder.add_edge(START, "classifier")
-builder.add_edge("classifier", "reasoner")
-
-# 3. IL NODO CRITICO: Il Router Condizionale con mappatura esplicita
-# Passiamo un dizionario come terzo argomento per aiutare LangGraph Studio
-# a capire dove portano le stringhe restituite dalla funzione route_after_reasoner.
+builder.add_edge("classifier", "reasoner_subgraph")
 builder.add_conditional_edges(
-    "reasoner", 
-    route_after_reasoner,
-    {
-        "tools": "tools",  # Se la funzione restituisce "tools", vai al nodo "tools"
-        "writer": "writer" ,
-        "exercises_writer": "exercises_writer"          # Se restituisce END (es. tramite il tool 'done'), vai alla fine
+    "reasoner_subgraph",
+    route_to_writers,{
+        "writer": "writer",
+        "exercises_writer": "exercises_writer"
     }
 )
-
-# 4. Dal tool si torna SEMPRE al ragionatore (chiusura del loop ReAct)
-builder.add_edge("tools", "reasoner")
 builder.add_edge("writer", "human_review")
 builder.add_edge("exercises_writer", "human_review")
-
+builder.add_edge("human_review", END)
 
 
 blog_system = builder.compile()
