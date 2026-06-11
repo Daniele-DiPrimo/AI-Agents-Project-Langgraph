@@ -12,6 +12,9 @@ class BlogState(TypedDict):
     intent: str
     macro_domain: str
     specific_topic: str
+    prompt_to_reasoner: str
+    research_material: str
+    final_article: str
 
 class ReasonerState(TypedDict):
     """Stato del reasoner subgraph"""
@@ -21,21 +24,17 @@ class ReasonerState(TypedDict):
     macro_domain: str
     specific_topic: str
     article_type: str
-
-    # --- Conversazione con i tool (solo per il loop ReAct interno)
-    messages: Annotated[list[BaseMessage], add_messages]
+    prompt_to_reasoner: str
 
     # --- Piano strutturato (prodotto dal planner)
     tool_plan: list[str]           # ["tavily", "semantic_scholar"]
-    search_queries: dict[str, str] # {"tavily": "...", "semantic_scholar": "..."}
-    current_step: int              # indice corrente nel tool_plan
-
-    # --- Dati reali che circolano tra i nodi
     raw_results: list[dict]        # output grezzo dei tool
     approved_sources: list[dict]   # fonti approvate dal source_evaluator
     research_material: str         # sintesi finale pulita → passa al BlogState
+    visited_urls: list[str]
 
     # --- Flag di controllo flusso
     sources_evaluated: bool
     is_complete: bool
+    missing_info: str
     iterations: int                # contatore cicli per evitare loop infiniti

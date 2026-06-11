@@ -12,17 +12,22 @@ class ClassificationSchema(BaseModel):
     specific_topic: str = Field(
         description="Il focus specifico e dettagliato dell'articolo"
     )
+    prompt_to_reasoner: str = Field(
+        description="Le istruzioni dettagliate e ripulite da passare al nodo reasoner"
+    )
 
 class SingleSourceEvaluationSchema(BaseModel):
-    id_source: str = Field(
-        description="Sito o URL della fonte, tool utilizzato."
+    source_reliability: float = Field(
+        description="Da 0.0 a 1.0. Valuta l'autorevolezza e l'affidabilità della fonte (es. siti ufficiali, paper = alto; forum sconosciuti = basso)."
     )
-    rate: float = Field(
-        description="Un valore da 0.0 a 1.0 che indica l'affidabilità dei link e l'utilità dell'informazione rispetto all'argomento richiesto."
+    information_relevance: float = Field(
+        description="Da 0.0 a 1.0. Valuta quanto l'informazione è pertinente, utile e centrata rispetto all'argomento cercato."
     )
     reasoning: str = Field(
         description="Spiega BREVEMENTE perchè hai assegnato questo punteggio"
     )
+    index_source: int = Field(
+        description="L'ID numerico esatto della fonte valutata (es. 0, 1, 2)")
 
 class FullSourcesEvaluationSchema(BaseModel):
     judgments: List[SingleSourceEvaluationSchema] = Field(
@@ -40,4 +45,12 @@ class CompletenessEvaluationSchema(BaseModel):
     )
     missing_info: str = Field(
         description="Se is_complete è False, elenca ESATTAMENTE cosa il planner deve cercare al prossimo giro. Se True, lascia vuoto."
+    )
+
+class SearchSchema(BaseModel):
+    giustificazione: str = Field(
+        description="OBBLIGATORIO: Spiega nel dettaglio il tuo ragionamento logico e PERCHÉ stai facendo questa ricerca."
+    )
+    query: str = Field(
+        description="La query di ricerca in inglese."
     )
