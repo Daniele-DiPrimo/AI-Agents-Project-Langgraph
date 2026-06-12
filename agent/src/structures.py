@@ -54,3 +54,8 @@ class SearchSchema(BaseModel):
     query: str = Field(
         description="La query di ricerca in inglese."
     )
+
+class EstrazioneConcetti(BaseModel):
+    concetti_trovati: List[str] = Field(
+        description="Lista dei concetti principali menzionati nel testo"
+    )
