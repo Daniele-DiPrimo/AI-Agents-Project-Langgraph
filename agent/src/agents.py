@@ -1,6 +1,13 @@
+import os
+from dotenv import load_dotenv
+from mcp import ClientSession, StdioServerParameters, stdio_client
+
+# Carica le variabili d'ambiente dal file .env nella cartella del server
+load_dotenv()
+
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
-from src.structures import ClassificationSchema
+from src.structures import ClassificationSchema, EstrazioneConcetti
 from src.state import BlogState
 
 import json
@@ -42,10 +49,10 @@ def classifier_node(state: BlogState):
 
     REGOLE DI COMPILAZIONE DEL JSON:
     - intent: Se la richiesta contiene "teoria", "spiega" o "come funziona", scrivi "Teoria". Se contiene "news", "notizie" o "novità", scrivi "News". Se contiene "esercizio", scrivi "Esercizio".
-    - macro_domain: La materia generale (es. "C++", "Sistemi Operativi").
+    - macro_domain: La materia generale deve essere ESCLUSIVAMENTE una delle seguenti ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
     - specific_topic: L'argomento preciso. Estrailo direttamente dal prompt.
     - prompt_to_reasoner: Trasforma la richiesta dell'utente in una direttiva chiara per il nodo successivo che scriverà l'articolo.."
-    - IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, \, /) dai valori che generi nel JSON. Usa solo lettere e spazi.
+    - IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, '\', /) dai valori che generi nel JSON. Usa solo lettere e spazi.
     """
     
     try:
@@ -77,10 +84,11 @@ def classifier_node(state: BlogState):
 # INIZIO NODO DI SCRITTURA
 # =====================================================
 # NODO WRITER UNIFICATO
-def writer_node(state: BlogState) -> dict:
+async def writer_node(state: BlogState) -> dict:
     """
     Nodo scrittore unificato: produce l'articolo finale o gli esercizi in Markdown.
     Estrae i dati direttamente dallo stato ed esegue il routing in base all'intent.
+    Infine, salva il risultato nel Knowledge Graph come memoria a lungo termine.
     """
     print("✍️ [Writer] Preparazione stesura...")
 
@@ -103,16 +111,20 @@ def writer_node(state: BlogState) -> dict:
         print("🎓 -> Modalità: Professore (Esercizi)")
         sys_prompt = f"""Sei un Professore Universitario esperto in '{macro_domain}'.
         Il tuo compito è creare esercizi pratici e stimolanti sull'argomento '{specific_topic}'.
-
-        REGOLE FONDAMENTALI E VINCOLI:
-        1. Basati ESCLUSIVAMENTE sul materiale di ricerca che ti verrà fornito dall'utente.
-        2. NON inventare formule, sintassi o concetti non presenti nel testo fornito.
-        3. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato).
-        4. Per ogni esercizio scrivi chiaramente la TRACCIA, usando dati numerici e scenari realistici presenti nel materiale.
-        5. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi.
-        6. Usa Markdown per separare nettamente tracce e soluzioni.
-        7. Scrivi rigorosamente in ITALIANO."""
-            
+        
+        REGOLA FONDAMENTALE:
+        Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
+        NON inventare formule, sintassi o concetti non presenti in questa sintesi.
+        
+        REGOLE DI FORMATTAZIONE:
+        1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato)
+        2. Per ogni esercizio scrivi chiaramente la TRACCIA
+        3. Usa dati numerici e scenari realistici presi dal materiale
+        4. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi
+        5. Usa Markdown per separare nettamente tracce e soluzioni
+        6. Scrivi in ITALIANO
+        """
+    
     else:
         print(f"📝 -> Modalità: Redattore (Tipo: {intent})")
         sys_prompt = f"""Sei l'autore principale di un blog tecnico universitario.
@@ -138,10 +150,13 @@ def writer_node(state: BlogState) -> dict:
         research_material_msg
     ]
 
-    final_draft = writer_llm.invoke(llm_messages)
-
+    final_draft = await writer_llm.ainvoke(llm_messages)
+    testo_generato = final_draft.content
     print("✅ [Writer] Stesura completata.")
-    return {"final_article": final_draft.content}
+
+    # 5. Ritorno dello stato aggiornato
+    return {"final_article": testo_generato}
+
 # =====================================================
 # FINE NODI DI SCRITTURA (HELPER_WRITER - WRITER - EXERCISES WRITER)
 # =====================================================
@@ -150,18 +165,20 @@ def writer_node(state: BlogState) -> dict:
 # INIZIO NODO HITL (HUMAN_REVIEW --> NODO / _PARSE_HUMAN_RESPONSE_ PER GESTIRE LA RISPOSTA)
 # =====================================================
 
-def human_review_node(state: BlogState) -> Command:
+async def human_review_node(state: BlogState) -> Command:
     """
     HITL: mette in pausa il grafo per la revisione umana dell'articolo.
-    Legge: final_article, intent
-    Azioni possibili: approva → END | modifica → writer/exercises_writer | annulla → END
+    Legge: final_article, intent, macro_domain, specific_topic
+    Azioni possibili: approva (SALVA NEL GRAFO) → END | modifica → writer | annulla → END
     """
 
     final_article = state.get("final_article", "")
+    intent = state.get("intent", "Unknown")
+    macro_domain = state.get("macro_domain", "Unknown")
+    specific_topic = state.get("specific_topic", "Unknown")
 
     if not final_article:
-        # Fallback di sicurezza — non dovrebbe accadere con il nuovo stato
-        print("⚠️ [Human Review] final_article vuoto, approvazione automatica.")
+        print("⚠️ [Human Review] final_article vuoto, approvazione automatica senza salvataggio.")
         return Command(goto=END)
 
     # 1. Pacchetto inviato all'interfaccia (LangGraph Studio o client)
@@ -181,7 +198,47 @@ def human_review_node(state: BlogState) -> Command:
     action = human_response.get("tipo", "annulla")
 
     if action == "approva":
-        print("✅ [Human Review] Articolo approvato.")
+        print("✅ [Human Review] Articolo approvato. Avvio salvataggio nel Knowledge Graph...")
+        
+        # ==========================================================
+        # MEMORY LOOP (Eseguito SOLO se approvato)
+        # ==========================================================
+        estrattore_concetti = writer_llm.with_structured_output(EstrazioneConcetti, method="json_mode")
+        
+        try:
+            # Estrazione concetti chiave
+            messaggi_estrazione = [
+                SystemMessage(content="Il tuo unico scopo è estrarre una lista di concetti chiave dal testo. DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido contenente la chiave 'concetti_trovati' come lista di stringhe."),
+                HumanMessage(content=f"Estrai i concetti da questo testo:\n{final_article}")
+            ]
+            risultato_estrazione = await estrattore_concetti.ainvoke(messaggi_estrazione)
+            concetti_collegati = risultato_estrazione.concetti_trovati
+            
+            # Generazione del titolo per Neo4j
+            prefisso = "Esercizi" if intent.lower() == "esercizio" else "Blog"
+            titolo_nodo = f"[{prefisso}] {specific_topic}"
+
+            print(f"💾 [Human Review] Connessione a MCP per salvare '{titolo_nodo}'...")
+            
+            percorso_mcp = os.getenv("MCP_SERVER_URI", "")
+            server_params = StdioServerParameters(command="python", args=[percorso_mcp])
+            
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    
+                    risultato_salvataggio = await session.call_tool("inserisci_articolo_agente", arguments={
+                        "titolo": titolo_nodo,
+                        "contenuto": final_article,
+                        "concetti_spiegati": concetti_collegati,
+                        "materia": macro_domain
+                    })
+                    print(f"✅ [Review-MCP]: {risultato_salvataggio.content[0].text}")
+
+        except Exception as e:
+            print(f"⚠️ [Review-MCP] Impossibile salvare nel grafo: {str(e)}")
+
+        # Esce dal grafo dopo aver salvato
         return Command(goto=END)
 
     elif action == "modifica":
@@ -191,19 +248,14 @@ def human_review_node(state: BlogState) -> Command:
         )
         print(f"🔄 [Human Review] Modifica richiesta: {feedback[:100]}...")
 
-        intent = state.get("intent", "").lower()
-        destination = "exercises_writer" if intent == "esercizio" else "writer"
-
         return Command(
-            goto=destination,
+            goto="writer",
             update={
-                # Passa il feedback come HumanMessage — formato corretto per LangGraph
                 "messages": [HumanMessage(
                     content=f"[FEEDBACK REVISORE UMANO] {feedback}. "
                             f"Riscrivi l'articolo tenendo conto di questo feedback. "
                             f"Il materiale di ricerca validato è già disponibile in research_material."
                 )],
-                # Pulisce l'articolo precedente — il writer lo sovrascriverà
                 "final_article": ""
             }
         )

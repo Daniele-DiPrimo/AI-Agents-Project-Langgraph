@@ -29,3 +29,5 @@ __pycache__/
 
 # File di sistema
 .DS_Store
+
+agent/.langgraph_api/
