@@ -38,15 +38,15 @@ def classifier_node(state: BlogState):
 
     # 2. PROMPT CHIRURGICO (Blindato contro gli apostrofi)
     system_prompt = f"""Sei un classificatore chirurgico per un blog universitario.
-Devi analizzare ESATTAMENTE questa richiesta dell'utente: "{user_prompt_safe}"
+    Devi analizzare ESATTAMENTE questa richiesta dell'utente: "{user_prompt_safe}"
 
-REGOLE DI COMPILAZIONE DEL JSON:
-- intent: Se la richiesta contiene "teoria", "spiega" o "come funziona", scrivi "Teoria". Se contiene "news", "notizie" o "novità", scrivi "News". Se contiene "esercizio", scrivi "Esercizio".
-- macro_domain: La materia generale (es. "C++", "Sistemi Operativi").
-- specific_topic: L'argomento preciso. Estrailo direttamente dal prompt.
-- prompt_to_reasoner: Trasforma la richiesta dell'utente in una direttiva chiara per il nodo successivo che scriverà l'articolo.."
-- IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, \, /) dai valori che generi nel JSON. Usa solo lettere e spazi.
-"""
+    REGOLE DI COMPILAZIONE DEL JSON:
+    - intent: Se la richiesta contiene "teoria", "spiega" o "come funziona", scrivi "Teoria". Se contiene "news", "notizie" o "novità", scrivi "News". Se contiene "esercizio", scrivi "Esercizio".
+    - macro_domain: La materia generale (es. "C++", "Sistemi Operativi").
+    - specific_topic: L'argomento preciso. Estrailo direttamente dal prompt.
+    - prompt_to_reasoner: Trasforma la richiesta dell'utente in una direttiva chiara per il nodo successivo che scriverà l'articolo.."
+    - IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, \, /) dai valori che generi nel JSON. Usa solo lettere e spazi.
+    """
     
     try:
         # Usiamo with_structured_output per forzare il JSON
@@ -71,9 +71,6 @@ REGOLE DI COMPILAZIONE DEL JSON:
             "specific_topic": user_prompt_safe[:50], # Usa l'input dell'utente come topic temporaneo
             "prompt_to_reasoner": fallback_prompt
         }
-
-
-
 
 
 # =====================================================
@@ -106,23 +103,16 @@ def writer_node(state: BlogState) -> dict:
         print("🎓 -> Modalità: Professore (Esercizi)")
         sys_prompt = f"""Sei un Professore Universitario esperto in '{macro_domain}'.
         Il tuo compito è creare esercizi pratici e stimolanti sull'argomento '{specific_topic}'.
-        
-        REGOLA FONDAMENTALE:
-        Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
-        NON inventare formule, sintassi o concetti non presenti in questa sintesi.
-        
-        REGOLE DI FORMATTAZIONE:
-        1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato)
-        2. Per ogni esercizio scrivi chiaramente la TRACCIA
-        3. Usa dati numerici e scenari realistici presi dal materiale
-        4. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi
-        5. Usa Markdown per separare nettamente tracce e soluzioni
-        6. Scrivi in ITALIANO
-        
-        --- INIZIO MATERIALE DI RICERCA VALIDATO ---
-        {research_material}
-        --- FINE MATERIALE DI RICERCA VALIDATO ---"""
-    
+
+        REGOLE FONDAMENTALI E VINCOLI:
+        1. Basati ESCLUSIVAMENTE sul materiale di ricerca che ti verrà fornito dall'utente.
+        2. NON inventare formule, sintassi o concetti non presenti nel testo fornito.
+        3. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato).
+        4. Per ogni esercizio scrivi chiaramente la TRACCIA, usando dati numerici e scenari realistici presenti nel materiale.
+        5. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi.
+        6. Usa Markdown per separare nettamente tracce e soluzioni.
+        7. Scrivi rigorosamente in ITALIANO."""
+            
     else:
         print(f"📝 -> Modalità: Redattore (Tipo: {intent})")
         sys_prompt = f"""Sei l'autore principale di un blog tecnico universitario.
@@ -139,7 +129,7 @@ def writer_node(state: BlogState) -> dict:
         - Includi una sezione finale "## Fonti" con tutti gli URL del materiale
         """
 
-    research_material_msg = HumanMessage(content=f"Materiale di riferimento per scrivere:\n{research_material}")
+    research_material_msg = HumanMessage(content=f"Ecco il materiale di ricerca validato su cui devi basare l'articolo:\n{research_material}")
 
     # 3. Assemblaggio e invocazione
     llm_messages = [

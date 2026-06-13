@@ -8,7 +8,7 @@ import re
 
 
 planner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
-source_evaluator_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+source_evaluator_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 
 # =====================================================
 # INIZIO NOODI DEL SOTTOGRAFO DI REASONING [PLANNER, SOURCE_EVALUATOR, COMPLETENESS_EVALUATOR]
@@ -119,18 +119,24 @@ def source_evaluator_node(state: ReasonerState) -> dict:
         method="json_mode"
     )
 
-    sys_prompt = """Sei un ispettore delle fonti.
-    Analizza i risultati delle ultime ricerche. 
-    Per ogni fonte valuta due aspetti assegnando punteggi da 0.0 a 1.0:
-    1. 'source_reliability': L'affidabilità del dominio o dell'autore.
-    2. 'information_relevance': L'attinenza del testo all'argomento ricercato.
-    Sii spietato con le informazioni generiche, fuori tema o allucinate.
+    sys_prompt = """Sei un revisore accademico spietato.
+    Analizza i risultati delle ricerche. Per ogni fonte valuta da 0.0 a 1.0:
+    1. 'source_reliability': L'affidabilità della fonte.
+       - 0.9/1.0 = Paper accademici, documentazione ufficiale, blog tecnici riconosciuti.
+       - 0.6/0.8 = Articoli divulgativi validi ma generalisti.
+       - < 0.5 = Forum non verificati, spam, fonti dubbie.
+    2. 'information_relevance': L'attinenza al topic richiesto.
+       - 0.9/1.0 = Contiene dati tecnici, codice o definizioni esatte richieste.
+       - 0.5/0.8 = Parla dell'argomento ma in modo superficiale.
+       - < 0.5 = Fuori tema o menziona l'argomento solo di sfuggita.
+    
+    Devi essere severo. Se la fonte è generica, penalizzala.
     
     Usa ESATTAMENTE questa struttura JSON:
     {
     "judgments": [
         {
-        "index_source": 0, // Inserisci SOLO IL NUMERO INTERO corrispondente all'ID FONTE
+        "index_source": 0,
         "source_reliability": 0.0,
         "information_relevance": 0.0,
         "reasoning": "Spiega brevemente i due punteggi assegnati"
@@ -155,15 +161,15 @@ def source_evaluator_node(state: ReasonerState) -> dict:
 
     judgment: FullSourcesEvaluationSchema = structured_source_evaluator_llm.invoke(llm_input)
 
-    ACCEPTANCE_THRESHOLD = 0.5
+    THRESHOLD_RELIABILITY = 0.70
+    THRESHOLD_RELEVANCE = 0.70
+    
     approved_sources = []
     not_approved_sources = []
     
     for v in judgment.judgments:
-        # Calcoliamo la media per capire se la fonte è globalmente accettabile
-        overall_score = (v.source_reliability + v.information_relevance) / 2.0
-
-        if overall_score >= ACCEPTANCE_THRESHOLD:
+        # LOGICA AND: Deve superare ENTRAMBE le soglie
+        if v.source_reliability >= THRESHOLD_RELIABILITY and v.information_relevance >= THRESHOLD_RELEVANCE:
             idx = v.index_source
             whole_content = "Testo originale non trovato."
             id_label = "Fonte Sconosciuta" 
@@ -176,7 +182,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
                 "id_source": id_label, 
                 "source_reliability": v.source_reliability,
                 "information_relevance": v.information_relevance,
-                "overall_score": overall_score, # Salviamo anche la media per comodità
+                "overall_score": (v.source_reliability + v.information_relevance) / 2.0, 
                 "reasoning": v.reasoning, 
                 "content": whole_content 
             })
@@ -224,20 +230,22 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
             "missing_info": "⚠️ Tutte le fonti recenti sono state scartate. Usa parole chiave o tool diversi per la prossima ricerca."
         }
 
-    sys_prompt = f"""Sei il Chief Editor di un blog tecnico universitario.
-    Valuta se il materiale raccolto è sufficiente per scrivere un contenuto di qualità.
+    sys_prompt = f"""Sei il Chief Editor accademico di un blog universitario tecnico.
+    Il tuo compito è valutare con estremo rigore se il materiale raccolto finora è sufficientemente profondo e completo per scrivere un contenuto di livello universitario.
     
     OBIETTIVO: articolo di tipo [{intent}], materia [{macro_domain}], argomento [{specific_topic}].
     
-    CRITERI DI SUFFICIENZA:
-    - Definizioni principali presenti
-    - Concetti chiave coperti
-    - Almeno un esempio pratico (se applicabile)
-    NON serve un'enciclopedia: se il cuore dell'argomento è coperto nei testi estratti, approva.
+    CRITERI DI SUFFICIENZA (Devono essere tutti soddisfatti):
+    1. Profondità tecnica: Ci sono dettagli tecnici, architettonici o matematici reali, non solo definizioni da dizionario?
+    2. Completezza: Le sfaccettature principali dell'argomento sono coperte?
+    3. Praticità: È presente almeno un caso d'uso, un esempio pratico o del codice (se pertinente all'argomento)?
+    
+    REGOLA FONDAMENTALE (STRICT GROUNDING):
+    Il Writer finale non potrà inventare nulla. Se un dettaglio manca nel materiale estratto qui sotto, mancherà anche nell'articolo finale. Se ritieni che l'articolo finale risulterebbe troppo superficiale basandosi solo su questi testi, DEVI bocciare la completezza.
     
     REGOLE OPERATIVE:
     - NON fare domande all'utente.
-    - Se manca il nucleo fondamentale, scrivi in 'missing_info' 2-3 parole chiave in inglese per la prossima ricerca."""
+    - Se l'informazione è insufficiente, metti "is_complete": false e in 'missing_info' scrivi 3-4 parole chiave mirate in inglese per guidare la prossima ricerca del Planner verso i concetti tecnici mancanti."""
 
     # AGGIORNATO: Mostriamo entrambi i punteggi al Revisore
     sources_summary = "\n".join([

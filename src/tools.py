@@ -11,8 +11,11 @@ load_dotenv()
 
 # Tool 1: Ricerca Web (obbligatorio da specifiche)
 # max_results=3 evita di saturare il contesto dell'LLM con troppi dati
-tavily = TavilySearch(max_results=1, search_depth="advanced")
-
+tavily = TavilySearch(
+    max_results=1,               # Alzalo almeno a 3 per dare scelta al valutatore
+    search_depth="advanced",     # Ottimo, esegue ricerche multiple sotto il cofano
+    include_raw_content=True,    # FONDAMENTALE: Restituisce l'articolo intero pulito (non l'HTML)
+)
 # Tool 2: Python Code Executor (uno dei tool "custom")
 # Permette all'LLM di scrivere ed eseguire codice per risolvere esercizi tecnici
 python_tool = PythonREPLTool()
