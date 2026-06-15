@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from google import genai
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
 # Carica le variabili d'ambiente dal file .env nella cartella del server
@@ -7,7 +8,7 @@ load_dotenv()
 
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
-from src.structures import ClassificationSchema, EstrazioneConcetti
+from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo
 from src.state import BlogState
 
 import json
@@ -17,6 +18,7 @@ from langgraph.graph import END
 # --- 1. SETUP MODELLI GROQ ---
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+embedder = genai.Client()
 
 # --- 3. NODO CLASSIFICATORE ---
 def classifier_node(state: BlogState):
@@ -89,9 +91,8 @@ def classifier_node(state: BlogState):
 # NODO WRITER UNIFICATO
 async def writer_node(state: BlogState) -> dict:
     """
-    Nodo scrittore unificato: produce l'articolo finale o gli esercizi in Markdown.
+    Genera l'articolo finale o gli esercizi in Markdown, includendo obbligatoriamente le citazioni.
     Estrae i dati direttamente dallo stato ed esegue il routing in base all'intent.
-    Infine, salva il risultato nel Knowledge Graph come memoria a lungo termine.
     """
     print("✍️ [Writer] Preparazione stesura...")
 
@@ -115,17 +116,19 @@ async def writer_node(state: BlogState) -> dict:
         sys_prompt = f"""Sei un Professore Universitario esperto in '{macro_domain}'.
         Il tuo compito è creare esercizi pratici e stimolanti sull'argomento '{specific_topic}'.
         
-        REGOLA FONDAMENTALE:
-        Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
-        NON inventare formule, sintassi o concetti non presenti in questa sintesi.
+        REGOLE TASSATIVE (GROUNDING & CITATIONS):
+        1. Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
+        2. NON inventare formule, sintassi o concetti non presenti in questa sintesi.
+        3. Per OGNI formula, dato numerico o concetto tecnico utilizzato nell'esercizio o nella soluzione, DEVI inserire una citazione esplicita alla fonte.
+        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte. Esempio: "Applicando il Teorema di Norton [Circuiti_Cap4.pdf]..."
         
         REGOLE DI FORMATTAZIONE:
-        1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato)
-        2. Per ogni esercizio scrivi chiaramente la TRACCIA
-        3. Usa dati numerici e scenari realistici presi dal materiale
-        4. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi
-        5. Usa Markdown per separare nettamente tracce e soluzioni
-        6. Scrivi in ITALIANO
+        1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato).
+        2. Per ogni esercizio scrivi chiaramente la TRACCIA.
+        3. Usa dati numerici e scenari realistici presi dal materiale.
+        4. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi, citando le fonti usate nei passaggi chiave.
+        5. Usa Markdown per separare nettamente tracce e soluzioni.
+        6. Scrivi in ITALIANO.
         """
     
     else:
@@ -133,18 +136,21 @@ async def writer_node(state: BlogState) -> dict:
         sys_prompt = f"""Sei l'autore principale di un blog tecnico universitario.
         Scrivi un articolo di tipo '{intent}' sulla materia '{macro_domain}' sull'argomento '{specific_topic}'.
         
-        REGOLA FONDAMENTALE:
-        Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
-        NON inventare informazioni, concetti o codice non presenti in questa sintesi.
+        REGOLE TASSATIVE (GROUNDING & CITATIONS):
+        1. Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
+        2. NON inventare informazioni, concetti o codice non presenti in questa sintesi.
+        3. Per OGNI affermazione tecnica, fatto o tesi che scrivi, DEVI inserire una citazione esplicita alla fonte direttamente nel testo.
+        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte. Esempio: "La complessità del QuickSort nel caso pessimo è O(n^2) [Algoritmi_Cap3.pdf]."
+        5. Se combini informazioni da più fonti, citale entrambe: [File1.pdf, File2.pdf, www.example.com].
         
         REGOLE DI FORMATTAZIONE:
-        - Scrivi in ITALIANO con Markdown pulito
-        - Inizia con un titolo H1 chiaro e descrittivo
-        - Usa sezioni ben divise con H2 e H3
-        - Includi una sezione finale "## Fonti" con tutti gli URL del materiale
+        - Scrivi in ITALIANO con Markdown pulito.
+        - Inizia con un titolo H1 chiaro e descrittivo.
+        - Usa sezioni ben divise con H2 e H3.
+        - Includi una sezione finale "## Fonti" elencando le fonti citate nel testo.
         """
 
-    research_material_msg = HumanMessage(content=f"Materiale di riferimento per scrivere:\n{research_material}")
+    research_material_msg = HumanMessage(content=f"Materiale di riferimento per scrivere (con i nomi delle fonti indicati):\n{research_material}")
 
     # 3. Assemblaggio e invocazione
     llm_messages = [
@@ -157,7 +163,7 @@ async def writer_node(state: BlogState) -> dict:
     testo_generato = final_draft.content
     print("✅ [Writer] Stesura completata.")
 
-    # 5. Ritorno dello stato aggiornato
+    # 4. Ritorno dello stato aggiornato
     return {"final_article": testo_generato}
 
 # =====================================================
@@ -206,22 +212,76 @@ async def human_review_node(state: BlogState) -> Command:
         # ==========================================================
         # MEMORY LOOP (Eseguito SOLO se approvato)
         # ==========================================================
-        estrattore_concetti = writer_llm.with_structured_output(EstrazioneConcetti, method="json_mode")
+        estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
         
         try:
-            # Estrazione concetti chiave
+            # 1. Estrazione concetti e fonti con Prompt potenziato
+            schema_richiesto = """
+            {
+              "concetti_trovati": ["concetto1", "concetto2"],
+              "relazioni_concetti": [
+                {
+                  "origine": "concetto1", 
+                  "tipo_relazione": "SI_BASA_SU", 
+                  "destinazione": "concetto2", 
+                  "dettaglio": "breve spiegazione"
+                }
+              ],
+              "fonti_documentali": ["file1.pdf", "file2.pdf"],
+              "link_esterni": ["https://esempio.com"],
+              "claims_estratti": [
+                {
+                  "affermazione": "Il concetto1 riduce i tempi di latenza",
+                  "concetto_riferimento": "concetto1"
+                }
+              ]
+            }
+            """
+            
             messaggi_estrazione = [
-                SystemMessage(content="Il tuo unico scopo è estrarre una lista di concetti chiave dal testo. DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido contenente la chiave 'concetti_trovati' come lista di stringhe."),
-                HumanMessage(content=f"Estrai i concetti da questo testo:\n{final_article}")
+                SystemMessage(
+                    content=(
+                        "Sei un estrattore dati specializzato. Analizza l'articolo fornito. "
+                        "DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido. "
+                        "Il tuo JSON DEVE usare ESATTAMENTE queste chiavi e rispettare questa struttura:\n"
+                        f"{schema_richiesto}\n"
+                        "REGOLE:\n"
+                        "1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].\n"
+                        "2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA."
+                    )
+                ),
+                HumanMessage(content=f"Estrai i metadati da questo testo in formato JSON:\n{final_article}")
             ]
-            risultato_estrazione = await estrattore_concetti.ainvoke(messaggi_estrazione)
+
+            risultato_estrazione = await estrattore_metadati.ainvoke(messaggi_estrazione)
+            
             concetti_collegati = risultato_estrazione.concetti_trovati
+            documenti_usati = risultato_estrazione.fonti_documentali
+            link_trovati = risultato_estrazione.link_esterni
+
+            # Convertiamo le relazioni in una lista di dizionari per inviarli via MCP
+            relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
+
+            claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti] # <-- NUOVO
             
             # Generazione del titolo per Neo4j
             prefisso = "Esercizi" if intent.lower() == "esercizio" else "Blog"
             titolo_nodo = f"[{prefisso}] {specific_topic}"
 
-            print(f"💾 [Human Review] Connessione a MCP per salvare '{titolo_nodo}'...")
+            # 2. CALCOLO DELL'EMBEDDING DELL'ARTICOLO (NUOVO)
+            print("🧠 Calcolo dell'embedding per l'articolo completo...")
+            # Combiniamo titolo e testo. Limitiamo a ~8000 caratteri in caso di articoli enormi per evitare limiti di token
+            testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article[:8000]}"
+            
+            # NOTA: Assicurati che 'embedder' sia definito globalmente in questo file come 'embedder = genai.Client()'
+            risultato_embedding = embedder.models.embed_content(
+                model="gemini-embedding-2",
+                contents=testo_da_embeddare
+            )
+            vettore_articolo = risultato_embedding.embeddings[0].values
+
+            # 3. Salvataggio via MCP
+            print(f"💾 [Human Review] Connessione a MCP per salvare '{titolo_nodo}' con relazioni e fonti...")
             
             percorso_mcp = os.getenv("MCP_SERVER_URI", "")
             server_params = StdioServerParameters(command="python", args=[percorso_mcp])
@@ -234,12 +294,17 @@ async def human_review_node(state: BlogState) -> Command:
                         "titolo": titolo_nodo,
                         "contenuto": final_article,
                         "concetti_spiegati": concetti_collegati,
-                        "materia": macro_domain
+                        "relazioni_concetti": relazioni_estratte, # <-- NUOVO PARAMETRO
+                        "materia": macro_domain,
+                        "vettore": vettore_articolo, # <--- PASSIAMO IL VETTORE QUI
+                        "fonti_documentali": documenti_usati, # <-- NUOVO
+                        "link_esterni": link_trovati,          # <-- NUOVO
+                        "claims_articolo": claims_estratte # <-- NUOVO PARAMETRO
                     })
                     print(f"✅ [Review-MCP]: {risultato_salvataggio.content[0].text}")
 
         except Exception as e:
-            print(f"⚠️ [Review-MCP] Impossibile salvare nel grafo: {str(e)}")
+            print(f"⚠️ [Review-MCP] Impossibile salvare nel grafo o calcolare l'embedding: {str(e)}")
 
         # Esce dal grafo dopo aver salvato
         return Command(goto=END)

@@ -42,9 +42,15 @@ class RelazioneEstratta(BaseModel):
     destinazione: str = Field(description="Nome del nodo di destinazione")
     dettaglio: str = Field(description="Contesto specifico in poche parole")
 
+class ClaimEstratto(BaseModel):
+    affermazione: str = Field(description="Una frase completa che esprime una tesi, una regola o un fatto chiave (max 15 parole).")
+    concetto_riferimento: str = Field(description="Il nome esatto del nodo Concetto_Teorico estratto a cui si riferisce.")
+
 class GrafoEstratto(BaseModel):
     nodi: List[NodoEstratto]
     relazioni: List[RelazioneEstratta]
+    claims: List[ClaimEstratto]
+
 
 # Inizializzazione Modelli AI (Globali per riutilizzo)
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, max_tokens=4000)
@@ -107,8 +113,8 @@ async def salva_chunk_e_vettore(session: ClientSession, chunk_id: str, testo_chu
     })
 
 async def estrai_e_salva_grafo(session: ClientSession, testo_chunk: str, chunk_id: str, nome_materia: str):
-    """Usa l'LLM per estrarre entità dal testo e le salva nel grafo via MCP."""
-    prompt = f"Estrai entità e relazioni da questo testo. Non creare nodi Materia. Testo:\n{testo_chunk}"
+    """Usa l'LLM per estrarre entità, relazioni e CLAIMS dal testo."""
+    prompt = f"Estrai entità, relazioni e affermazioni chiave (claims) da questo testo. Non creare nodi Materia. Testo:\n{testo_chunk}"
     risultato_grafo = estrattore.invoke(prompt)
 
     # Salva i Nodi
@@ -143,6 +149,14 @@ async def estrai_e_salva_grafo(session: ClientSession, testo_chunk: str, chunk_i
             "tipo_relazione": rel.tipo_relazione,
             "entita_destinazione": rel.destinazione,
             "dettaglio": rel.dettaglio
+        })
+
+    #Salva i claims (affermazioni chiave) collegati al chunk
+    for claim in risultato_grafo.claims:
+        await session.call_tool("crea_claim", arguments={
+            "origine_id": chunk_id, # Il chunk del PDF "sostiene" questa affermazione
+            "testo_claim": claim.affermazione,
+            "concetto_riferimento": claim.concetto_riferimento
         })
 
 async def processa_singolo_documento(session: ClientSession, filepath: str, nome_file: str, nome_materia: str):

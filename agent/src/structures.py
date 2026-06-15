@@ -55,7 +55,19 @@ class SearchSchema(BaseModel):
         description="La query di ricerca in inglese."
     )
 
-class EstrazioneConcetti(BaseModel):
-    concetti_trovati: List[str] = Field(
-        description="Lista dei concetti principali menzionati nel testo"
-    )
+class RelazioneArticolo(BaseModel):
+    origine: str = Field(description="Nome del concetto di origine")
+    tipo_relazione: str = Field(description="SOLO TRA: [APPARTIENE_A, SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA, SPIEGA, SOSTIENE, RIGUARDA]")
+    destinazione: str = Field(description="Nome del concetto di destinazione")
+    dettaglio: str = Field(description="Contesto specifico in poche parole")
+
+class ClaimArticolo(BaseModel):
+    affermazione: str = Field(description="Una frase completa che esprime una tesi, una regola o un fatto chiave (max 15 parole).")
+    concetto_riferimento: str = Field(description="Il nome esatto del concetto teorico a cui si riferisce.")
+
+class EstrazioneMetadatiArticolo(BaseModel):
+    concetti_trovati: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
+    relazioni_concetti: List[RelazioneArticolo] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
+    fonti_documentali: List[str] = Field(description="Lista esatta dei nomi dei file PDF citati nel testo (es. 'Algoritmi_Cap3.pdf').")
+    link_esterni: List[str] = Field(description="Lista di tutti gli URL o link web menzionati nel testo. Lista vuota se non ce ne sono.")
+    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") # <-- NUOVO
