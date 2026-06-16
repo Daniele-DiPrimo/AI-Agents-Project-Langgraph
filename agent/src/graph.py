@@ -3,20 +3,6 @@ from src.state import BlogState
 from src.agents import classifier_node, writer_node, human_review_node
 from src.reasoner_graph import reasoner_subgraph
 
-def route_to_writers(state: BlogState):
-    """
-    Smista il flusso verso lo scrittore corretto. 
-    Viene chiamata SOLO quando il reasoner_subgraph ha concluso 
-    tutti i suoi loop interni di ricerca e valutazione.
-    """
-    intent = state.get("intent", "").lower()
-    
-    if intent == "esercizio":
-        return "exercises_writer"
-    
-    # Fallback/Default: se è teoria o altro, va allo scrittore classico
-    return "writer"
-
 
 builder = StateGraph(BlogState)
 

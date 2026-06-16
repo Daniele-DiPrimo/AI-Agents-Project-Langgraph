@@ -88,36 +88,53 @@ def classifier_node(state: BlogState):
 # NODO WRITER UNIFICATO
 async def writer_node(state: BlogState) -> dict:
     """
-    Genera l'articolo finale o gli esercizi in Markdown, includendo obbligatoriamente le citazioni.
-    Estrae i dati direttamente dallo stato ed esegue il routing in base all'intent.
+    Genera l'articolo finale o gli esercizi in Markdown, includendo obbligatoriamente le citazioni e gli URL visitati.
+    Estrae i dati dallo stato (unendo K-RAG e Web RAG) ed esegue il routing in base all'intent.
     """
-    print("✍️ [Writer] Preparazione stesura...")
+    print("✍️ [Writer] Preparazione stesura con unificazione K-RAG e Web...")
 
-    # 1. Estrazione diretta dei dati dallo stato
+    # 1. Estrazione dei dati dallo stato (Inclusa la nuova variabile graph_results)
     intent             = state.get("intent", "Unknown")
     macro_domain       = state.get("macro_domain", "Unknown")
     specific_topic     = state.get("specific_topic", "Unknown")
     prompt_to_reasoner = state.get("prompt_to_reasoner", "Scrivi in base al materiale fornito.")
-    research_material  = state.get("research_material", "")
+    research_material  = state.get("research_material", "") # Materiale dal Web validato
+    graph_results      = state.get("graph_results", "")     # Materiale pesante dal Knowledge Graph
 
-    # Fallback di sicurezza essenziale
-    if not research_material:
+    # Fallback di sicurezza essenziale: blocca se non c'è assolutamente nessuna informazione
+    if not research_material and not graph_results:
         raise ValueError(
-            "[Writer] research_material è vuoto. "
-            "Il completeness_evaluator non ha completato correttamente il suo lavoro o c'è un errore nel passaggio di stato."
+            "[Writer] Errore critico: sia 'research_material' che 'graph_results' sono vuoti. "
+            "Il sottografo di ricerca non ha estratto alcuna informazione utile."
         )
 
-    # 2. Routing interno del System Prompt basato sull'intent
+    # 2. COSTRUZIONE DEL PAYLOAD DI CONTESTO UNIFICATO
+    # Uniamo i due flussi di conoscenza contrassegnandoli chiaramente per l'LLM
+    contesto_unificato = ""
+    
+    if graph_results:
+        contesto_unificato += "======================================================\n"
+        contesto_unificato += "CONTESTO E STRUTTURA DAL KNOWLEDGE GRAPH LOCALE (K-RAG):\n"
+        contesto_unificato += "======================================================\n"
+        contesto_unificato += f"{graph_results}\n\n"
+        
+    if research_material:
+        contesto_unificato += "======================================================\n"
+        contesto_unificato += "INFORMAZIONI DI INTEGRAZIONE DA FONTI ESTERNE / WEB:\n"
+        contesto_unificato += "======================================================\n"
+        contesto_unificato += f"{research_material}\n\n"
+
+    # 3. Routing interno del System Prompt basato sull'intent (Aggiornato per supportare entrambe le fonti)
     if intent.lower() == "esercizio":
         print("🎓 -> Modalità: Professore (Esercizi)")
         sys_prompt = f"""Sei un Professore Universitario esperto in '{macro_domain}'.
         Il tuo compito è creare esercizi pratici e stimolanti sull'argomento '{specific_topic}'.
         
         REGOLE TASSATIVE (GROUNDING & CITATIONS):
-        1. Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
-        2. NON inventare formule, sintassi o concetti non presenti in questa sintesi.
-        3. Per OGNI formula, dato numerico o concetto tecnico utilizzato nell'esercizio o nella soluzione, DEVI inserire una citazione esplicita alla fonte.
-        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte. Esempio: "Applicando il Teorema di Norton [Circuiti_Cap4.pdf]..."
+        1. Basati ESCLUSIVAMENTE sul materiale di riferimento fornito qui sotto (unione di Knowledge Graph e Fonti Esterne).
+        2. NON inventare formule, tesi o definizioni non presenti in questa sintesi.
+        3. Per OGNI formula, dato numerico o concetto tecnico utilizzato, DEVI inserire una citazione esplicita alla fonte.
+        4. Il formato della citazione deve essere tra parentesi quadre con il nome della fonte così come appare nei tag delle intestazioni (es. [Dispense_Analisi1.pdf] o [Nome_Articolo_Precedente] o [URL_Sito_Web]).
         
         REGOLE DI FORMATTAZIONE:
         1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato).
@@ -134,33 +151,35 @@ async def writer_node(state: BlogState) -> dict:
         Scrivi un articolo di tipo '{intent}' sulla materia '{macro_domain}' sull'argomento '{specific_topic}'.
         
         REGOLE TASSATIVE (GROUNDING & CITATIONS):
-        1. Basati ESCLUSIVAMENTE sul materiale di ricerca validato fornito qui sotto.
-        2. NON inventare informazioni, concetti o codice non presenti in questa sintesi.
+        1. Basati ESCLUSIVAMENTE sul materiale di riferimento fornito qui sotto. Sfrutta i concetti e le affermazioni chiave (claims) estratti dal Knowledge Graph e i dettagli approfonditi del testo.
+        2. NON inventare informazioni o codice non presenti in questa sintesi.
         3. Per OGNI affermazione tecnica, fatto o tesi che scrivi, DEVI inserire una citazione esplicita alla fonte direttamente nel testo.
-        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte. Esempio: "La complessità del QuickSort nel caso pessimo è O(n^2) [Algoritmi_Cap3.pdf]."
+        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte (es. [Dispense_Analisi1.pdf] o [Nome_Articolo_Precedente] o [URL_Sito_Web]).
         5. Se combini informazioni da più fonti, citale entrambe: [File1.pdf, File2.pdf, www.example.com].
         
         REGOLE DI FORMATTAZIONE:
         - Scrivi in ITALIANO con Markdown pulito.
         - Inizia con un titolo H1 chiaro e descrittivo.
-        - Usa sezioni ben divise con H2 e H3.
-        - Includi una sezione finale "## Fonti" elencando le fonti citate nel testo.
+        - Usa sezioni ben divise con H2 e H3 per mappare la progressione logica dei concetti del grafo.
+        - Includi una sezione finale "## Fonti" elencando ordinatamente tutte le fonti documentali e i link web rintracciati nel contesto.
         """
 
-    research_material_msg = HumanMessage(content=f"Materiale di riferimento per scrivere (con i nomi delle fonti indicati):\n{research_material}")
+    # Impacchettiamo il mega-testo unificato nel messaggio per l'LLM
+    context_msg = HumanMessage(content=f"Materiale di riferimento totale per la redazione:\n{contesto_unificato}")
 
-    # 3. Assemblaggio e invocazione
+    # 4. Assemblaggio dei messaggi e invocazione
     llm_messages = [
         SystemMessage(content=sys_prompt),
-        HumanMessage(content=f"Istruzioni specifiche per la redazione:\n{prompt_to_reasoner}"),
-        research_material_msg
+        HumanMessage(content=f"Istruzioni specifiche per la redazione inviate dal coordinatore:\n{prompt_to_reasoner}"),
+        context_msg
     ]
 
+    # Il modello riceve tutto il blocco ed è guidato a citare sia i PDF che i vecchi articoli
     final_draft = await writer_llm.ainvoke(llm_messages)
     testo_generato = final_draft.content
-    print("✅ [Writer] Stesura completata.")
+    print("✅ [Writer] Stesura completata con successo basata su K-RAG totale.")
 
-    # 4. Ritorno dello stato aggiornato
+    # 5. Ritorno dello stato aggiornato
     return {"final_article": testo_generato}
 
 # =====================================================
@@ -267,8 +286,8 @@ async def human_review_node(state: BlogState) -> Command:
 
             # 2. CALCOLO DELL'EMBEDDING DELL'ARTICOLO (NUOVO)
             print("🧠 Calcolo dell'embedding per l'articolo completo...")
-            # Combiniamo titolo e testo. Limitiamo a ~8000 caratteri in caso di articoli enormi per evitare limiti di token
-            testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article[:8000]}"
+            # Combiniamo titolo e testo.
+            testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article}"
             
             # NOTA: Assicurati che 'embedder' sia definito globalmente in questo file come 'embedder = genai.Client()'
             risultato_embedding = embedder.models.embed_content(

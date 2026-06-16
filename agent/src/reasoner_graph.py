@@ -8,10 +8,28 @@ from src.agents_subgraph_reasoner import (
 )
 from src.tools import blog_tools
 
+def route_after_tool(state: ReasonerState):
+    """
+    Controlla quale tool è stato appena eseguito dal tool_executor.
+    Se è il K-RAG locale, torna direttamente al planner.
+    Se è un tool di ricerca Web, passa la mano agli elementi di valutazione.
+    """
+    tool_plan = state.get("tool_plan", [])
+
+    if tool_plan:
+        last_tool_call = tool_plan[-1]
+        
+        # Verifichiamo se l'ultimo messaggio proviene dal tool K-RAG unificato
+        # Nota: 'ricerca_krag_unificata' deve corrispondere al @tool della tua libreria
+        if last_tool_call.get("name") == "ricerca_krag_unificata":
+            return "planner"
+            
+    # Di default, se viene usato Tavily/Google Search o altri tool esterni
+    return "source_evaluator"
 
 def route_after_completeness(state: ReasonerState):
 
-    if(state.get("iterations") == 3): 
+    if(state.get("iterations") == 5): 
         return END
 
     if(state.get("is_complete", False)):
@@ -29,8 +47,18 @@ reasoner_subgraph_builder.add_node("tool_executor", tool_executor_node)
 
 reasoner_subgraph_builder.add_edge(START, "planner")
 reasoner_subgraph_builder.add_edge("planner", "tool_executor")
-reasoner_subgraph_builder.add_edge("tool_executor", "source_evaluator")
+
+reasoner_subgraph_builder.add_conditional_edges(
+    "tool_executor",
+    route_after_tool, 
+    {
+        "planner": "planner",                     # Se K-RAG -> salta i controlli e torna al Planner
+        "source_evaluator": "source_evaluator"     # Se Web -> vai alla pipeline di validazione
+    }
+)
+
 reasoner_subgraph_builder.add_edge("source_evaluator", "completeness_evaluator")
+
 reasoner_subgraph_builder.add_conditional_edges(
     "completeness_evaluator",
     route_after_completeness, {

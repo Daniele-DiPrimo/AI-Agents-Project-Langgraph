@@ -28,13 +28,24 @@ def planner_node(state: ReasonerState) -> dict:
     prompt_to_reasoner = state.get("prompt_to_reasoner", "NotSpecified")
 
     missing_info = state.get("missing_info", "Questa è la prima ricerca. Inizia esplorando l'argomento.")
- 
-    planner_llm_w_tools = planner_completeness_llm.bind_tools(
-        blog_tools,
-        tool_choice="auto",
-        parallel_tool_calls=False
-    )
- 
+
+    tool_disponibili = []
+    istruzione_krag = ""
+
+    tool_plan = state.get("tool_plan", [])
+
+    if not tool_plan:
+        print("🔍 [Planner] Primo avvio: Il K-RAG deve essere consultato.")
+        tool_disponibili = blog_tools
+        istruzione_krag = """3. Devi OBBLIGATORIAMENTE cercare prima le informazioni nel Knowledge Graph locale usando il tool 'ricerca_krag_unificata'."""
+    else:
+        print("⏭️ [Planner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
+        # Escludiamo il K-RAG dai tool che l'LLM può vedere ed eseguire
+        tool_disponibili = [t for t in blog_tools if t.name != "ricerca_krag_unificata"]
+
+        istruzione_krag = """3. Il Knowledge Graph locale è GIÀ STATO CONSULTATO. Ti è TASSATIVAMENTE VIETATO ripetere questa ricerca. 
+        Ora devi procedere a integrare le informazioni usando esclusivamente 'tavily' o 'semantic_scholar' se necessario, oppure fermarti."""
+
     sys_prompt = f"""Sei l'Agente Ricercatore Capo. Il tuo unico scopo è pianificare ed eseguire la ricerca di informazioni chiamando i tool appropriati.
  
     CONTESTO DELLA RICERCA:
@@ -51,12 +62,21 @@ def planner_node(state: ReasonerState) -> dict:
     REGOLE DI SELEZIONE DEI TOOL:
     - Usa 'tavily' per ricerche generiche, notizie recenti (News) o concetti di base.
     - Usa 'semantic_scholar' per ricerche accademiche, paper e teoria approfondita.
+    - Usa 'ricerca_krag_unificata' per cercare informazioni nel Knowledge Graph.
     
     REGOLE OPERATIVE RIGOROSE:
     1. Usa l'OBIETTIVO FINALE per capire il livello di dettaglio e il taglio che dovrà avere l'articolo, formulando query di ricerca precise.
     2. Ti è ASSOLUTAMENTE VIETATO scrivere l'articolo o rispondere alla direttiva dell'Obiettivo Finale. Devi SOLO cercare e inoltrare i risultati grezzi.
-    3. Se ritieni che le informazioni presenti nella cronologia siano sufficienti per coprire l'Obiettivo Finale, fermati e rispondi senza invocare ulteriori tool.
+    {istruzione_krag}
+    4. Successivamente integra con almeno una ricerca su Tavily o Semantic Scholar.
+    5. Se ritieni che le informazioni presenti nella cronologia siano sufficienti per coprire l'Obiettivo Finale, fermati e rispondi senza invocare ulteriori tool.
     """
+
+    planner_llm_w_tools = planner_completeness_llm.bind_tools(
+        tool_disponibili,
+        tool_choice="auto",
+        parallel_tool_calls=False
+    )
  
     messages = [SystemMessage(content=sys_prompt)]
     answer = planner_llm_w_tools.invoke(messages)
@@ -64,12 +84,13 @@ def planner_node(state: ReasonerState) -> dict:
     return {"tool_plan": answer.tool_calls}
 
 
-def tool_executor_node(state: ReasonerState) -> dict:
+async def tool_executor_node(state: ReasonerState) -> dict:
     """Esegue le chiamate generate da bind_tools e salva in raw_results."""
     print("🛠️ [Tool Executor] Esecuzione ricerche...")
     
     tool_plan = state.get("tool_plan", [])
     raw_results = []
+    graph_results = state.get("graph_results", "")
     visited_urls = state.get("visited_urls", [])
     
     # Creiamo un dizionario veloce per richiamare i tuoi tool reali tramite il loro nome
@@ -83,7 +104,7 @@ def tool_executor_node(state: ReasonerState) -> dict:
         if tool_name in tools_by_name:
             try:
                 # Eseguiamo il tool passando gli argomenti scompattati
-                result = tools_by_name[tool_name].invoke(tool_args)
+                result = await tools_by_name[tool_name].ainvoke(tool_args)
                 result_str = str(result)
                 
                 extracted_links = re.findall(r'https?://[^\s"\'\},\]]+', result_str)
@@ -93,18 +114,23 @@ def tool_executor_node(state: ReasonerState) -> dict:
                         visited_urls.append(link)
 
                 # Salviamo il risultato puro e crudo nel nostro campo specifico
-                raw_results.append({
-                    "tool_used": tool_name,
-                    "query_used": str(tool_args),
-                    "raw_output": str(result)
-                })
+                if(tool_name == "ricerca_krag_unificata"):
+                    graph_results = result_str
+                else:
+                    raw_results.append({
+                        "tool_used": tool_name,
+                        "query_used": str(tool_args),
+                        "raw_output": result_str
+                    })
                 print(f"   -> Tool '{tool_name}' eseguito con successo.")
             except Exception as e:
                 print(f"   -> ⚠️ Errore nell'esecuzione del tool {tool_name}: {e}")
 
     # Aggiorniamo ESCLUSIVAMENTE raw_results
     return {"raw_results": raw_results,
-            "visited_urls": visited_urls}
+            "visited_urls": visited_urls,
+            "graph_results": graph_results
+            }
     
 
 # 2. IL NODO AGGIORNATO
@@ -259,20 +285,29 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
         human_msg
     ])
 
-    if answer.is_complete:
+    MAX_ITERATIONS = 5 # Imposta un limite di sicurezza
+
+    if answer.is_complete or iterations >= MAX_ITERATIONS:
+        # Se siamo arrivati al limite dei cicli, forziamo l'uscita stampando un warning nel materiale
+        avviso_limite = "\n> ⚠️ Avviso: Ricerca interrotta per limite di tentativi. Il materiale potrebbe essere parziale.\n" if not answer.is_complete else ""
+
         research_material = f"# Materiale di ricerca validato\n\n"
-        research_material += f"**Tipo articolo:** {intent} | **Dominio:** {macro_domain} | **Topic:** {specific_topic}\n\n"
+        research_material += f"**Tipo articolo:** {intent} | **Dominio:** {macro_domain} | **Topic:** {specific_topic}\n"
+        research_material += avviso_limite + "\n"
         
         for s in approved_sources:
-            # AGGIORNATO: Mostriamo entrambi i punteggi nel Markdown per il Writer
             research_material += f"## {s.get('id_source', 'Sconosciuta')} (Affidabilità: {s.get('source_reliability', 0.0):.1f} | Attinenza: {s.get('information_relevance', 0.0):.1f})\n"
             research_material += f"**Motivazione:** {s.get('reasoning', '')}\n\n"
             research_material += f"**Testo grezzo dal web:**\n> {s.get('content', 'Nessun testo estratto.')}\n\n"
             research_material += "---\n\n"
 
-        print(f"✅ [Coverage Evaluator] Materiale sufficiente. Fonti approvate in totale: {len(approved_sources)}")
+        if iterations >= MAX_ITERATIONS:
+            print(f"⚠️ [Coverage Evaluator] Raggiunto limite iterazioni ({iterations}). Passo al Writer quello che ho.")
+        else:
+            print(f"✅ [Coverage Evaluator] Materiale sufficiente. Fonti approvate in totale: {len(approved_sources)}")
+            
         return {
-            "is_complete": True,
+            "is_complete": True, # Forziamo a True per uscire dal loop
             "research_material": research_material,
             "iterations": iterations + 1
         }
