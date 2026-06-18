@@ -34,6 +34,7 @@ def route_after_completeness(state: ReasonerState):
 
     if(state.get("is_complete", False)):
         return END
+    
     return "planner"
 
 reasoner_subgraph_builder = StateGraph(ReasonerState)
@@ -52,8 +53,8 @@ reasoner_subgraph_builder.add_conditional_edges(
     "tool_executor",
     route_after_tool, 
     {
-        "planner": "planner",                     # Se K-RAG -> salta i controlli e torna al Planner
-        "source_evaluator": "source_evaluator"     # Se Web -> vai alla pipeline di validazione
+        "planner": "planner",
+        "source_evaluator": "source_evaluator"
     }
 )
 

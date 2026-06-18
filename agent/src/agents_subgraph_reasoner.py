@@ -1,20 +1,21 @@
+import re
+
 from langchain_groq import ChatGroq
 from langchain_core.messages import  SystemMessage, HumanMessage
+
 from src.structures import  FullSourcesEvaluationSchema, CompletenessEvaluationSchema
 from src.state import  ReasonerState
 from src.tools import blog_tools
-from langgraph.graph import END
-import re
 
+from src.prompts import (
+    get_planner_prompt,
+    get_source_evaluator_prompt,
+    get_completeness_evaluator_prompt
+)
 
 planner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 source_evaluator_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 
-# =====================================================
-# INIZIO NOODI DEL SOTTOGRAFO DI REASONING [PLANNER, SOURCE_EVALUATOR, COMPLETENESS_EVALUATOR]
-# =====================================================
-
-# PLANNER
 def planner_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile del piano esecutivo per la ricerca.
@@ -30,47 +31,22 @@ def planner_node(state: ReasonerState) -> dict:
     missing_info = state.get("missing_info", "Questa è la prima ricerca. Inizia esplorando l'argomento.")
 
     tool_disponibili = []
-    istruzione_krag = ""
 
     tool_plan = state.get("tool_plan", [])
+    is_krag_consulted = bool(tool_plan)
 
-    if not tool_plan:
+    if not is_krag_consulted:
         print("🔍 [Planner] Primo avvio: Il K-RAG deve essere consultato.")
         tool_disponibili = blog_tools
-        istruzione_krag = """3. Devi OBBLIGATORIAMENTE cercare prima le informazioni nel Knowledge Graph locale usando il tool 'ricerca_krag_unificata'."""
     else:
         print("⏭️ [Planner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
-        # Escludiamo il K-RAG dai tool che l'LLM può vedere ed eseguire
         tool_disponibili = [t for t in blog_tools if t.name != "ricerca_krag_unificata"]
 
-        istruzione_krag = """3. Il Knowledge Graph locale è GIÀ STATO CONSULTATO. Ti è TASSATIVAMENTE VIETATO ripetere questa ricerca. 
-        Ora devi procedere a integrare le informazioni usando esclusivamente 'tavily' o 'semantic_scholar' se necessario, oppure fermarti."""
-
-    sys_prompt = f"""Sei l'Agente Ricercatore Capo. Il tuo unico scopo è pianificare ed eseguire la ricerca di informazioni chiamando i tool appropriati.
- 
-    CONTESTO DELLA RICERCA:
-    - Intent: {intent}
-    - Dominio: {macro_domain}
-    - Topic specifico: {specific_topic}
-
-    OBIETTIVO FINALE DEL REDATTORE (Usa questo SOLO come contesto per capire cosa cercare):
-    "{prompt_to_reasoner}"
-
-    STATUS RICERCA ATTUALE (Feedback del Revisore):
-    "{missing_info}"
-    
-    REGOLE DI SELEZIONE DEI TOOL:
-    - Usa 'tavily' per ricerche generiche, notizie recenti (News) o concetti di base.
-    - Usa 'semantic_scholar' per ricerche accademiche, paper e teoria approfondita.
-    - Usa 'ricerca_krag_unificata' per cercare informazioni nel Knowledge Graph.
-    
-    REGOLE OPERATIVE RIGOROSE:
-    1. Usa l'OBIETTIVO FINALE per capire il livello di dettaglio e il taglio che dovrà avere l'articolo, formulando query di ricerca precise.
-    2. Ti è ASSOLUTAMENTE VIETATO scrivere l'articolo o rispondere alla direttiva dell'Obiettivo Finale. Devi SOLO cercare e inoltrare i risultati grezzi.
-    {istruzione_krag}
-    4. Successivamente integra con almeno una ricerca su Tavily o Semantic Scholar.
-    5. Se ritieni che le informazioni presenti nella cronologia siano sufficienti per coprire l'Obiettivo Finale, fermati e rispondi senza invocare ulteriori tool.
-    """
+    # Genera il prompt dinamicamente
+    sys_prompt = get_planner_prompt(
+        intent, macro_domain, specific_topic, 
+        prompt_to_reasoner, missing_info, is_krag_consulted
+    )
 
     planner_llm_w_tools = planner_completeness_llm.bind_tools(
         tool_disponibili,
@@ -82,7 +58,6 @@ def planner_node(state: ReasonerState) -> dict:
     answer = planner_llm_w_tools.invoke(messages)
  
     return {"tool_plan": answer.tool_calls}
-
 
 async def tool_executor_node(state: ReasonerState) -> dict:
     """Esegue le chiamate generate da bind_tools e salva in raw_results."""
@@ -113,7 +88,7 @@ async def tool_executor_node(state: ReasonerState) -> dict:
                     if link not in visited_urls:
                         visited_urls.append(link)
 
-                # Salviamo il risultato puro e crudo nel nostro campo specifico
+                # Salviamo il risultato nei campi appropriati.
                 if(tool_name == "ricerca_krag_unificata"):
                     graph_results = result_str
                 else:
@@ -126,14 +101,11 @@ async def tool_executor_node(state: ReasonerState) -> dict:
             except Exception as e:
                 print(f"   -> ⚠️ Errore nell'esecuzione del tool {tool_name}: {e}")
 
-    # Aggiorniamo ESCLUSIVAMENTE raw_results
     return {"raw_results": raw_results,
             "visited_urls": visited_urls,
             "graph_results": graph_results
             }
     
-
-# 2. IL NODO AGGIORNATO
 def source_evaluator_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile ESCLUSIVAMENTE della valutazione delle fonti.
@@ -145,31 +117,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
         method="json_mode"
     )
 
-    sys_prompt = """Sei un revisore accademico spietato.
-    Analizza i risultati delle ricerche. Per ogni fonte valuta da 0.0 a 1.0:
-    1. 'source_reliability': L'affidabilità della fonte.
-       - 0.9/1.0 = Paper accademici, documentazione ufficiale, blog tecnici riconosciuti.
-       - 0.6/0.8 = Articoli divulgativi validi ma generalisti.
-       - < 0.5 = Forum non verificati, spam, fonti dubbie.
-    2. 'information_relevance': L'attinenza al topic richiesto.
-       - 0.9/1.0 = Contiene dati tecnici, codice o definizioni esatte richieste.
-       - 0.5/0.8 = Parla dell'argomento ma in modo superficiale.
-       - < 0.5 = Fuori tema o menziona l'argomento solo di sfuggita.
-    
-    Devi essere severo. Se la fonte è generica, penalizzala.
-    
-    Usa ESATTAMENTE questa struttura JSON:
-    {
-    "judgments": [
-        {
-        "index_source": 0,
-        "source_reliability": 0.0,
-        "information_relevance": 0.0,
-        "reasoning": "Spiega brevemente i due punteggi assegnati"
-        }
-    ],
-    "need_new_search": false
-    }"""
+    sys_prompt = get_source_evaluator_prompt()
     
     raw_results = state.get("raw_results", [])
     if not raw_results:
@@ -230,9 +178,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
             "approved_sources": existing + approved_sources,
             "sources_evaluated": True
         }
-# ==========================================
-# COMPLETENESS EVALUATOR
-# ==========================================
+
 def completeness_evaluator_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile della valutazione della completezza complessiva del materiale.
@@ -249,31 +195,25 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
     sources_evaluated = state.get("sources_evaluated", False)
     iterations     = state.get("iterations", 0)
 
+    MAX_ITERATIONS = 5 
+    
+    # Calcoliamo subito quale sarà la prossima iterazione
+    next_iteration = iterations + 1
+
+    # 1. Gestione uscita anticipata se mancano fonti valutate
     if not sources_evaluated:
-        return {
-            "is_complete": False,
-            "iterations": iterations + 1,
-            "missing_info": "⚠️ Tutte le fonti recenti sono state scartate. Usa parole chiave o tool diversi per la prossima ricerca."
-        }
+        if next_iteration >= MAX_ITERATIONS:
+            # Se siamo al limite, passiamo oltre per fargli compilare comunque il (poco) materiale che ha
+            pass 
+        else:
+            return {
+                "is_complete": False,
+                "iterations": next_iteration,
+                "missing_info": "⚠️ Tutte le fonti recenti sono state scartate. Usa parole chiave o tool diversi per la prossima ricerca."
+            }
 
-    sys_prompt = f"""Sei il Chief Editor accademico di un blog universitario tecnico.
-    Il tuo compito è valutare con estremo rigore se il materiale raccolto finora è sufficientemente profondo e completo per scrivere un contenuto di livello universitario.
-    
-    OBIETTIVO: articolo di tipo [{intent}], materia [{macro_domain}], argomento [{specific_topic}].
-    
-    CRITERI DI SUFFICIENZA (Devono essere tutti soddisfatti):
-    1. Profondità tecnica: Ci sono dettagli tecnici, architettonici o matematici reali, non solo definizioni da dizionario?
-    2. Completezza: Le sfaccettature principali dell'argomento sono coperte?
-    3. Praticità: È presente almeno un caso d'uso, un esempio pratico o del codice (se pertinente all'argomento)?
-    
-    REGOLA FONDAMENTALE (STRICT GROUNDING):
-    Il Writer finale non potrà inventare nulla. Se un dettaglio manca nel materiale estratto qui sotto, mancherà anche nell'articolo finale. Se ritieni che l'articolo finale risulterebbe troppo superficiale basandosi solo su questi testi, DEVI bocciare la completezza.
-    
-    REGOLE OPERATIVE:
-    - NON fare domande all'utente.
-    - Se l'informazione è insufficiente, metti "is_complete": false e in 'missing_info' scrivi 3-4 parole chiave mirate in inglese per guidare la prossima ricerca del Planner verso i concetti tecnici mancanti."""
+    sys_prompt = get_completeness_evaluator_prompt(intent, macro_domain, specific_topic)
 
-    # AGGIORNATO: Mostriamo entrambi i punteggi al Revisore
     sources_summary = "\n".join([
         f"- {s.get('id_source', 'N/A')} (Affidabilità: {s.get('source_reliability', 0)} | Attinenza: {s.get('information_relevance', 0)}): {s.get('reasoning', '')}\n  Testo Originale: {s.get('content', '')}"
         for s in approved_sources
@@ -285,10 +225,8 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
         human_msg
     ])
 
-    MAX_ITERATIONS = 5 # Imposta un limite di sicurezza
-
-    if answer.is_complete or iterations >= MAX_ITERATIONS:
-        # Se siamo arrivati al limite dei cicli, forziamo l'uscita stampando un warning nel materiale
+    # 2. Controllo usando NEXT_ITERATION invece di iterations
+    if answer.is_complete or next_iteration >= MAX_ITERATIONS:
         avviso_limite = "\n> ⚠️ Avviso: Ricerca interrotta per limite di tentativi. Il materiale potrebbe essere parziale.\n" if not answer.is_complete else ""
 
         research_material = f"# Materiale di ricerca validato\n\n"
@@ -301,24 +239,20 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
             research_material += f"**Testo grezzo dal web:**\n> {s.get('content', 'Nessun testo estratto.')}\n\n"
             research_material += "---\n\n"
 
-        if iterations >= MAX_ITERATIONS:
-            print(f"⚠️ [Coverage Evaluator] Raggiunto limite iterazioni ({iterations}). Passo al Writer quello che ho.")
+        if next_iteration >= MAX_ITERATIONS:
+            print(f"⚠️ [Coverage Evaluator] Raggiunto limite iterazioni ({next_iteration}). Passo al Writer quello che ho.")
         else:
             print(f"✅ [Coverage Evaluator] Materiale sufficiente. Fonti approvate in totale: {len(approved_sources)}")
             
         return {
-            "is_complete": True, # Forziamo a True per uscire dal loop
+            "is_complete": True, 
             "research_material": research_material,
-            "iterations": iterations + 1
+            "iterations": next_iteration # Aggiorniamo comunque il contatore per coerenza
         }
     else:
         print(f"🔄 [Coverage Evaluator] Materiale incompleto. Manca: {answer.missing_info}")
         return {
             "is_complete": False,
-            "iterations": iterations + 1,
+            "iterations": next_iteration,
             "missing_info": f"INFO MANCANTI: Il revisore ha detto che manca: '{answer.missing_info}'. Fai un'altra ricerca mirata su questo."
         }
-
-# =====================================================
-# FINE NOODI DEL SOTTOGRAFO DI REASONING [PLANNER, SOURCE_EVALUATOR, COMPLETENESS_EVALUATOR]
-# =====================================================

@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal, List
 
-# --- 2. Schema di classificazione ---
 class ClassificationSchema(BaseModel):
     intent: Literal["News", "Teoria", "Esercizio"] = Field(
         description="L'intento dell'utente"

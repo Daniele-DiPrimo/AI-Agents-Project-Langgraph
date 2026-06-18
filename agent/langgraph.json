@@ -3,5 +3,5 @@
   "graphs": {
     "blog_agent": "./src/graph.py:blog_system"
   },
-  "env": ".env"
+  "env": "../.env"
 }

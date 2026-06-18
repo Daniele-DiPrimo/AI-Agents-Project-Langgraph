@@ -1,30 +1,35 @@
 import os
 from dotenv import load_dotenv
+import json
+
 from google import genai
-from mcp import ClientSession, StdioServerParameters, stdio_client
-
-# Carica le variabili d'ambiente dal file .env nella cartella del server
-load_dotenv()
-
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.types import interrupt, Command
+from langgraph.graph import END
+from src.mcp_client import call_mcp_tool
+
 from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo
 from src.state import BlogState
 
-import json
-from langgraph.types import interrupt, Command
-from langgraph.graph import END
+from src.prompts import (
+    get_classifier_prompt,
+    get_classifier_fallback,
+    get_writer_exercise_prompt,
+    get_writer_article_prompt,
+    get_metadata_extractor_prompt
+)
 
-# --- 1. SETUP MODELLI GROQ ---
+load_dotenv()
+
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
-writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 embedder = genai.Client()
 
 # --- 3. NODO CLASSIFICATORE ---
 def classifier_node(state: BlogState):
     """Analizza il prompt originale in modo infallibile e popola lo stato."""
     
-    # 1. ESTRAZIONE CORAZZATA RIGOROSA
     user_prompt = "Nessun prompt riconosciuto." # Fallback di base
     
     # Se Studio passa i messaggi tramite la UI della chat
@@ -34,10 +39,10 @@ def classifier_node(state: BlogState):
     elif "original_prompt" in state and state.get("original_prompt"):
         user_prompt = state["original_prompt"]
 
-    # Pulizia: rimuoviamo accenti o apostrofi strani che fanno impazzire Groq
+    # Pulizia: rimuoviamo accenti o apostrofi strani per evitare problemi di parsing o di interpretazione del prompt da parte di Groq
     user_prompt_safe = str(user_prompt).replace("'", " ").replace('"', " ").strip()
 
-    # Se l'input è vuoto, fermiamo il modello prima che provi a fare JSON a caso
+    # Se l'input è vuoto, fermiamo il modello prima che provi a fare JSON casuali
     if not user_prompt_safe:
         return {"intent": "Sconosciuto",
         "macro_domain": "Errore", 
@@ -45,23 +50,12 @@ def classifier_node(state: BlogState):
         "prompt_to_reasoner": "L'utente non ha fornito alcun input valido. Chiedi all'utente di specificare un argomento."
         }
 
-    # 2. PROMPT CHIRURGICO (Blindato contro gli apostrofi)
-    system_prompt = f"""Sei un classificatore chirurgico per un blog universitario.
-    Devi analizzare ESATTAMENTE questa richiesta dell'utente: "{user_prompt_safe}"
-
-    REGOLE DI COMPILAZIONE DEL JSON:
-    - intent: Se la richiesta contiene "teoria", "spiega" o "come funziona", scrivi "Teoria". Se contiene "news", "notizie" o "novità", scrivi "News". Se contiene "esercizio", scrivi "Esercizio".
-    - macro_domain: La materia generale deve essere ESCLUSIVAMENTE una delle seguenti ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
-    - specific_topic: L'argomento preciso. Estrailo direttamente dal prompt.
-    - prompt_to_reasoner: Trasforma la richiesta dell'utente in una direttiva chiara per il nodo successivo che scriverà l'articolo.."
-    - IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, '\', /) dai valori che generi nel JSON. Usa solo lettere e spazi.
-    """
+    system_prompt = get_classifier_prompt(user_prompt_safe)
     
     try:
         # Usiamo with_structured_output per forzare il JSON
         structured_llm = classifier_llm.with_structured_output(ClassificationSchema)
         
-        # Invochiamo il modello
         result = structured_llm.invoke([SystemMessage(content=system_prompt)])
         
         return {
@@ -72,8 +66,8 @@ def classifier_node(state: BlogState):
         }
     except Exception as e:
         print(f"⚠️ Errore API Groq nel Classifier: {e}")
-        # Se Groq crasha (es. rate limit o failed generation), non facciamo crollare l'intero Studio
-        fallback_prompt = f"Scrivi un articolo informativo riguardo il seguente argomento: {user_prompt_safe[:50]}"
+        # Se Groq presenta errori (es. rate limit o failed generation), non facciamo crollare l'intero Studio
+        fallback_prompt = get_classifier_fallback(user_prompt_safe)
         return {
             "intent": "Teoria", # Default sicuro
             "macro_domain": "Generico", 
@@ -81,11 +75,6 @@ def classifier_node(state: BlogState):
             "prompt_to_reasoner": fallback_prompt
         }
 
-
-# =====================================================
-# INIZIO NODO DI SCRITTURA
-# =====================================================
-# NODO WRITER UNIFICATO
 async def writer_node(state: BlogState) -> dict:
     """
     Genera l'articolo finale o gli esercizi in Markdown, includendo obbligatoriamente le citazioni e gli URL visitati.
@@ -93,7 +82,7 @@ async def writer_node(state: BlogState) -> dict:
     """
     print("✍️ [Writer] Preparazione stesura con unificazione K-RAG e Web...")
 
-    # 1. Estrazione dei dati dallo stato (Inclusa la nuova variabile graph_results)
+    # 1. Estrazione dei dati dallo stato
     intent             = state.get("intent", "Unknown")
     macro_domain       = state.get("macro_domain", "Unknown")
     specific_topic     = state.get("specific_topic", "Unknown")
@@ -108,8 +97,7 @@ async def writer_node(state: BlogState) -> dict:
             "Il sottografo di ricerca non ha estratto alcuna informazione utile."
         )
 
-    # 2. COSTRUZIONE DEL PAYLOAD DI CONTESTO UNIFICATO
-    # Uniamo i due flussi di conoscenza contrassegnandoli chiaramente per l'LLM
+    # 2. COSTRUZIONE DEL PAYLOAD
     contesto_unificato = ""
     
     if graph_results:
@@ -127,42 +115,10 @@ async def writer_node(state: BlogState) -> dict:
     # 3. Routing interno del System Prompt basato sull'intent (Aggiornato per supportare entrambe le fonti)
     if intent.lower() == "esercizio":
         print("🎓 -> Modalità: Professore (Esercizi)")
-        sys_prompt = f"""Sei un Professore Universitario esperto in '{macro_domain}'.
-        Il tuo compito è creare esercizi pratici e stimolanti sull'argomento '{specific_topic}'.
-        
-        REGOLE TASSATIVE (GROUNDING & CITATIONS):
-        1. Basati ESCLUSIVAMENTE sul materiale di riferimento fornito qui sotto (unione di Knowledge Graph e Fonti Esterne).
-        2. NON inventare formule, tesi o definizioni non presenti in questa sintesi.
-        3. Per OGNI formula, dato numerico o concetto tecnico utilizzato, DEVI inserire una citazione esplicita alla fonte.
-        4. Il formato della citazione deve essere tra parentesi quadre con il nome della fonte così come appare nei tag delle intestazioni (es. [Dispense_Analisi1.pdf] o [Nome_Articolo_Precedente] o [URL_Sito_Web]).
-        
-        REGOLE DI FORMATTAZIONE:
-        1. Crea 2 o 3 esercizi di difficoltà crescente (indica il livello: Base / Intermedio / Avanzato).
-        2. Per ogni esercizio scrivi chiaramente la TRACCIA.
-        3. Usa dati numerici e scenari realistici presi dal materiale.
-        4. Fornisci la SOLUZIONE DETTAGLIATA per ogni esercizio con spiegazione dei passaggi, citando le fonti usate nei passaggi chiave.
-        5. Usa Markdown per separare nettamente tracce e soluzioni.
-        6. Scrivi in ITALIANO.
-        """
-    
+        sys_prompt = get_writer_exercise_prompt(macro_domain, specific_topic)
     else:
         print(f"📝 -> Modalità: Redattore (Tipo: {intent})")
-        sys_prompt = f"""Sei l'autore principale di un blog tecnico universitario.
-        Scrivi un articolo di tipo '{intent}' sulla materia '{macro_domain}' sull'argomento '{specific_topic}'.
-        
-        REGOLE TASSATIVE (GROUNDING & CITATIONS):
-        1. Basati ESCLUSIVAMENTE sul materiale di riferimento fornito qui sotto. Sfrutta i concetti e le affermazioni chiave (claims) estratti dal Knowledge Graph e i dettagli approfonditi del testo.
-        2. NON inventare informazioni o codice non presenti in questa sintesi.
-        3. Per OGNI affermazione tecnica, fatto o tesi che scrivi, DEVI inserire una citazione esplicita alla fonte direttamente nel testo.
-        4. Il formato della citazione deve essere tra parentesi quadre con il nome esatto della fonte (es. [Dispense_Analisi1.pdf] o [Nome_Articolo_Precedente] o [URL_Sito_Web]).
-        5. Se combini informazioni da più fonti, citale entrambe: [File1.pdf, File2.pdf, www.example.com].
-        
-        REGOLE DI FORMATTAZIONE:
-        - Scrivi in ITALIANO con Markdown pulito.
-        - Inizia con un titolo H1 chiaro e descrittivo.
-        - Usa sezioni ben divise con H2 e H3 per mappare la progressione logica dei concetti del grafo.
-        - Includi una sezione finale "## Fonti" elencando ordinatamente tutte le fonti documentali e i link web rintracciati nel contesto.
-        """
+        sys_prompt = get_writer_article_prompt(intent, macro_domain, specific_topic)
 
     # Impacchettiamo il mega-testo unificato nel messaggio per l'LLM
     context_msg = HumanMessage(content=f"Materiale di riferimento totale per la redazione:\n{contesto_unificato}")
@@ -174,169 +130,58 @@ async def writer_node(state: BlogState) -> dict:
         context_msg
     ]
 
-    # Il modello riceve tutto il blocco ed è guidato a citare sia i PDF che i vecchi articoli
+    # Se ci sono messaggi precedenti (feedback umano o richieste di rigenerazione), li aggiungiamo per contestualizzare la stesura
+    if "messages" in state and state["messages"]:
+        last_msg = state["messages"][-1]
+        
+        if hasattr(last_msg, 'content'):
+            if "[TIPO: RIGENERA]" in last_msg.content:
+                llm_messages.append(last_msg)
+                
+            elif "[TIPO: MODIFICA]" in last_msg.content:
+                llm_messages.append(last_msg)
+
     final_draft = await writer_llm.ainvoke(llm_messages)
     testo_generato = final_draft.content
     print("✅ [Writer] Stesura completata con successo basata su K-RAG totale.")
 
-    # 5. Ritorno dello stato aggiornato
     return {"final_article": testo_generato}
-
-# =====================================================
-# FINE NODI DI SCRITTURA (HELPER_WRITER - WRITER - EXERCISES WRITER)
-# =====================================================
-
-# =====================================================
-# INIZIO NODO HITL (HUMAN_REVIEW --> NODO / _PARSE_HUMAN_RESPONSE_ PER GESTIRE LA RISPOSTA)
-# =====================================================
 
 async def human_review_node(state: BlogState) -> Command:
     """
     HITL: mette in pausa il grafo per la revisione umana dell'articolo.
-    Legge: final_article, intent, macro_domain, specific_topic
-    Azioni possibili: approva (SALVA NEL GRAFO) → END | modifica → writer | annulla → END
+    Si occupa SOLO di raccogliere il feedback e decidere il routing.
     """
-
     final_article = state.get("final_article", "")
-    intent = state.get("intent", "Unknown")
-    macro_domain = state.get("macro_domain", "Unknown")
-    specific_topic = state.get("specific_topic", "Unknown")
 
     if not final_article:
-        print("⚠️ [Human Review] final_article vuoto, approvazione automatica senza salvataggio.")
+        print("⚠️ [Human Review] final_article vuoto, terminazione automatica.")
         return Command(goto=END)
 
-    # 1. Pacchetto inviato all'interfaccia (LangGraph Studio o client)
     review_request = {
         "azione": "revisione_articolo",
         "anteprima": final_article[:500] + "...\n[Testo troncato per l'anteprima]",
-        "istruzioni": "Rispondi con: {'tipo': 'approva'} | {'tipo': 'modifica', 'feedback': '...'} | {'tipo': 'annulla'}"
+        "istruzioni": "Rispondi con: {'tipo': 'approva'} | {'tipo': 'modifica', 'feedback': '...'} | {'tipo': 'annulla'} | {'tipo': 'rigenera'} | {'tipo': 'nuova ricerca'}"
     }
 
-    # 2. Il grafo si congela qui
+    # Il grafo si congela qui
     raw_resume_value = interrupt([review_request])
-
-    # 3. Normalizzazione robusta della risposta
-    human_response = _parse_human_response(raw_resume_value)
-
-    # 4. Routing in base all'azione
+    human_response = parse_human_response(raw_resume_value)
     action = human_response.get("tipo", "annulla")
 
     if action == "approva":
-        print("✅ [Human Review] Articolo approvato. Avvio salvataggio nel Knowledge Graph...")
-        
-        # ==========================================================
-        # MEMORY LOOP (Eseguito SOLO se approvato)
-        # ==========================================================
-        estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
-        
-        try:
-            # 1. Estrazione concetti e fonti con Prompt potenziato
-            schema_richiesto = """
-            {
-              "concetti_trovati": ["concetto1", "concetto2"],
-              "relazioni_concetti": [
-                {
-                  "origine": "concetto1", 
-                  "tipo_relazione": "SI_BASA_SU", 
-                  "destinazione": "concetto2", 
-                  "dettaglio": "breve spiegazione"
-                }
-              ],
-              "fonti_documentali": ["file1.pdf", "file2.pdf"],
-              "link_esterni": ["https://esempio.com"],
-              "claims_estratti": [
-                {
-                  "affermazione": "Il concetto1 riduce i tempi di latenza",
-                  "concetto_riferimento": "concetto1"
-                }
-              ]
-            }
-            """
-            
-            messaggi_estrazione = [
-                SystemMessage(
-                    content=(
-                        "Sei un estrattore dati specializzato. Analizza l'articolo fornito. "
-                        "DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido. "
-                        "Il tuo JSON DEVE usare ESATTAMENTE queste chiavi e rispettare questa struttura:\n"
-                        f"{schema_richiesto}\n"
-                        "REGOLE:\n"
-                        "1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].\n"
-                        "2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA."
-                    )
-                ),
-                HumanMessage(content=f"Estrai i metadati da questo testo in formato JSON:\n{final_article}")
-            ]
-
-            risultato_estrazione = await estrattore_metadati.ainvoke(messaggi_estrazione)
-            
-            concetti_collegati = risultato_estrazione.concetti_trovati
-            documenti_usati = risultato_estrazione.fonti_documentali
-            link_trovati = risultato_estrazione.link_esterni
-
-            # Convertiamo le relazioni in una lista di dizionari per inviarli via MCP
-            relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
-
-            claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti] # <-- NUOVO
-            
-            # Generazione del titolo per Neo4j
-            prefisso = "Esercizi" if intent.lower() == "esercizio" else "Blog"
-            titolo_nodo = f"[{prefisso}] {specific_topic}"
-
-            # 2. CALCOLO DELL'EMBEDDING DELL'ARTICOLO (NUOVO)
-            print("🧠 Calcolo dell'embedding per l'articolo completo...")
-            # Combiniamo titolo e testo.
-            testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article}"
-            
-            # NOTA: Assicurati che 'embedder' sia definito globalmente in questo file come 'embedder = genai.Client()'
-            risultato_embedding = embedder.models.embed_content(
-                model="gemini-embedding-2",
-                contents=testo_da_embeddare
-            )
-            vettore_articolo = risultato_embedding.embeddings[0].values
-
-            # 3. Salvataggio via MCP
-            print(f"💾 [Human Review] Connessione a MCP per salvare '{titolo_nodo}' con relazioni e fonti...")
-            
-            percorso_mcp = os.getenv("MCP_SERVER_URI", "")
-            server_params = StdioServerParameters(command="python", args=[percorso_mcp])
-            
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    
-                    risultato_salvataggio = await session.call_tool("inserisci_articolo_agente", arguments={
-                        "titolo": titolo_nodo,
-                        "contenuto": final_article,
-                        "concetti_spiegati": concetti_collegati,
-                        "relazioni_concetti": relazioni_estratte, # <-- NUOVO PARAMETRO
-                        "materia": macro_domain,
-                        "vettore": vettore_articolo, # <--- PASSIAMO IL VETTORE QUI
-                        "fonti_documentali": documenti_usati, # <-- NUOVO
-                        "link_esterni": link_trovati,          # <-- NUOVO
-                        "claims_articolo": claims_estratte # <-- NUOVO PARAMETRO
-                    })
-                    print(f"✅ [Review-MCP]: {risultato_salvataggio.content[0].text}")
-
-        except Exception as e:
-            print(f"⚠️ [Review-MCP] Impossibile salvare nel grafo o calcolare l'embedding: {str(e)}")
-
-        # Esce dal grafo dopo aver salvato
-        return Command(goto=END)
+        print("✅ [Human Review] Articolo approvato. Passo il controllo al nodo di salvataggio...")
+        return Command(goto="save_article")
 
     elif action == "modifica":
-        feedback = human_response.get(
-            "feedback",
-            "Revisione generale richiesta senza dettagli specifici."
-        )
+        feedback = human_response.get("feedback", "Revisione generale richiesta senza dettagli specifici.")
         print(f"🔄 [Human Review] Modifica richiesta: {feedback[:100]}...")
 
         return Command(
             goto="writer",
             update={
                 "messages": [HumanMessage(
-                    content=f"[FEEDBACK REVISORE UMANO] {feedback}. "
+                    content=f"[TIPO: MODIFICA]\nFeedback del revisore umano {feedback}. "
                             f"Riscrivi l'articolo tenendo conto di questo feedback. "
                             f"Il materiale di ricerca validato è già disponibile in research_material."
                 )],
@@ -344,25 +189,123 @@ async def human_review_node(state: BlogState) -> Command:
             }
         )
 
+    # --- NUOVA OPZIONE 1: RIGENERA SOLO LA FORMA ---
+    elif action == "rigenera_testo":
+        print("🔄 [Human Review] Rigenerazione del testo richiesta (stesso materiale).")
+        return Command(
+            goto="writer",
+            update={
+                "messages": [HumanMessage(
+                    content="[TIPO: RIGENERA]\nIgnora la stesura precedente e scrivi una versione completamente nuova, "
+                            "con un approccio o uno stile diverso, ma basandoti sullo STESSO materiale."
+                )],
+                "final_article": ""
+            }
+        )
+
+    # --- NUOVA OPZIONE 2: RIFAI LA RICERCA ---
+    elif action == "nuova_ricerca":
+        feedback = human_response.get("feedback", "Trova nuove fonti e approfondisci l'argomento.")
+        print("🔎 [Human Review] Nuova ricerca richiesta. Ritorno al Reasoner Subgraph...")
+        return Command(
+            goto="reasoner_subgraph",
+            update={
+                # Aggiorniamo la direttiva al reasoner in modo che il planner sappia cosa cercare di nuovo
+                "prompt_to_reasoner": f"ATTENZIONE (Ricerca aggiuntiva richiesta): {feedback}, "
+                    "decidere se svuotare il research_material precedente o se il reasoner ci aggiungerà roba",
+                "final_article": "",
+                # È importante resettare eventuali flag di stato del Reasoner se condivisi, ma LangGraph 
+                # gestirà il reset del sub-grafo all'ingresso se configurato correttamente.
+            }
+        )
+
     else:
         print("🚫 [Human Review] Articolo annullato o risposta non riconosciuta.")
         return Command(goto=END)
 
+async def save_article_node(state: BlogState) -> dict:
+    """
+    Si attiva solo dopo l'approvazione. 
+    Estrae metadati, calcola embeddings e salva nel Knowledge Graph tramite MCP.
+    """
+    print("💾 [Save Node] Avvio estrazione metadati e salvataggio in locale...")
+    
+    final_article = state.get("final_article", "")
+    intent = state.get("intent", "Unknown")
+    macro_domain = state.get("macro_domain", "Unknown")
+    specific_topic = state.get("specific_topic", "Unknown")
+    
+    estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
+    
+    try:
+        system_prompt = get_metadata_extractor_prompt()
+        messaggi_estrazione = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Estrai i metadati da questo testo in formato JSON:\n{final_article}")
+        ]
 
-def _parse_human_response(raw: any) -> dict:
+        risultato_estrazione = await estrattore_metadati.ainvoke(messaggi_estrazione)
+        
+        concetti_collegati = risultato_estrazione.concetti_trovati
+        documenti_usati = risultato_estrazione.fonti_documentali
+        link_trovati = risultato_estrazione.link_esterni
+        relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
+        claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti]
+        
+        prefisso = "Esercizi" if intent.lower() == "esercizio" else "Blog"
+        titolo_nodo = f"[{prefisso}] {specific_topic}"
+
+        print("🧠 [Save Node] Calcolo dell'embedding per l'articolo completo...")
+        testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article}"
+        
+        risultato_embedding = embedder.models.embed_content(
+            model="gemini-embedding-2",
+            contents=testo_da_embeddare
+        )
+        vettore_articolo = risultato_embedding.embeddings[0].values
+
+        print(f"🔗 [Save Node] Connessione a MCP per salvare '{titolo_nodo}'...")
+        
+        risultato_salvataggio = await call_mcp_tool(
+            tool_name="inserisci_articolo_agente",
+            arguments={
+                "titolo": titolo_nodo,
+                "contenuto": final_article,
+                "concetti_spiegati": concetti_collegati,
+                "relazioni_concetti": relazioni_estratte,
+                "materia": macro_domain,
+                "vettore": vettore_articolo,
+                "fonti_documentali": documenti_usati,
+                "link_esterni": link_trovati,
+                "claims_articolo": claims_estratte 
+            }
+        )
+        print(f"✅ [Save Node] Successo: {risultato_salvataggio}")
+
+    except Exception as e:
+        print(f"⚠️ [Save Node] Impossibile estrarre o salvare nel grafo: {str(e)}")
+        
+    return {} # Non c'è bisogno di aggiornare lo stato, il flusso termina qui
+
+
+
+
+#utils
+def parse_human_response(raw: any) -> dict:
     """
     Normalizza qualsiasi risposta umana in un dict con chiave 'tipo'.
     Gestisce: lista, stringa JSON, stringa libera, dict, tipo sconosciuto.
+    Supporta: approva, modifica, rigenera_testo, nuova_ricerca, annulla.
     """
-    # Spacchetta lista
+    # Spacchetta lista se l'input arriva dentro un array
     if isinstance(raw, list) and len(raw) > 0:
         raw = raw[0]
 
-    # È già un dict — caso ideale
+    # È già un dict (es. inviato via JSON strutturato dalla UI) — caso ideale
     if isinstance(raw, dict):
         return raw
 
-    # È una stringa — proviamo JSON, poi testo libero
+    # È una stringa — proviamo prima a decodificarla come JSON, poi passiamo all'analisi testuale
     if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
@@ -371,12 +314,24 @@ def _parse_human_response(raw: any) -> dict:
         except json.JSONDecodeError:
             pass
 
-        # Analisi testo libero
+        # Normalizzazione testo libero per il parsing delle parole chiave
         text = raw.lower().strip()
+        
+        # 1. OPZIONE: NUOVA RICERCA (Controlliamo prima le frasi composte)
+        if any(k in text for k in ["nuova ricerca", "rifai ricerca", "cerca ancora", "nuove fonti", "new search", "approfondisci"]):
+            return {"tipo": "nuova_ricerca", "feedback": raw}
+        
+        # 2. OPZIONE: RIGENERA SOLO IL TESTO (Stesso materiale)
+        if any(k in text for k in ["rigenera", "riscrivi", "rifai testo", "regenerate", "cambia stile"]):
+            return {"tipo": "rigenera_testo"}
+        
+        # 3. OPZIONE: APPROVA
         if any(k in text for k in ["approva", "approv", "ok", "sì", "si", "yes"]):
             return {"tipo": "approva"}
+        
+        # 4. OPZIONE: MODIFICA STRUTTURALE (Feedback generico sul testo esistente)
         if any(k in text for k in ["modifica", "cambia", "rivedi", "no", "feedback"]):
             return {"tipo": "modifica", "feedback": raw}
 
-    # Paracadute finale
+    # Paracadute finale se l'input non è interpretabile (es. l'utente chiude la finestra o scrive "stop")
     return {"tipo": "annulla"}

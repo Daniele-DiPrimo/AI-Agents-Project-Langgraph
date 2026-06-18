@@ -30,7 +30,7 @@ class ReasonerState(TypedDict):
     # --- Piano strutturato (prodotto dal planner)
     tool_plan: list[str]           # ["tavily", "semantic_scholar"]
     raw_results: list[dict]        # output grezzo dei tool
-    graph_results: str              # risultato della ricerca nel Knowledge Graph
+    graph_results: str             # risultato della ricerca nel Knowledge Graph
     approved_sources: list[dict]   # fonti approvate dal source_evaluator
     research_material: str         # sintesi finale pulita → passa al BlogState
     visited_urls: list[str]
