@@ -5,7 +5,7 @@ class ClassificationSchema(BaseModel):
     intent: Literal["News", "Teoria", "Esercizio"] = Field(
         description="L'intento dell'utente"
     )
-    macro_domain: str = Field(
+    subject: str = Field(
         description="Il dominio generale o la materia dell'argomento "
     )
     specific_topic: str = Field(
@@ -15,27 +15,14 @@ class ClassificationSchema(BaseModel):
         description="Le istruzioni dettagliate e ripulite da passare al nodo reasoner"
     )
 
-class SingleSourceEvaluationSchema(BaseModel):
-    source_reliability: float = Field(
-        description="Da 0.0 a 1.0. Valuta l'autorevolezza e l'affidabilità della fonte (es. siti ufficiali, paper = alto; forum sconosciuti = basso)."
-    )
-    information_relevance: float = Field(
-        description="Da 0.0 a 1.0. Valuta quanto l'informazione è pertinente, utile e centrata rispetto all'argomento cercato."
-    )
-    reasoning: str = Field(
-        description="Spiega BREVEMENTE perchè hai assegnato questo punteggio"
-    )
-    index_source: int = Field(
-        description="L'ID numerico esatto della fonte valutata (es. 0, 1, 2)")
+class SingleJudgment(BaseModel):
+    source_url: str = Field(..., description="L'URL della fonte valutata") # Usiamo l'URL come ID
+    source_reliability: float
+    source_relevance: float
+    reasoning: str
 
-class FullSourcesEvaluationSchema(BaseModel):
-    judgments: List[SingleSourceEvaluationSchema] = Field(
-        description="La lista delle valutaioni per ogni singola informazione resistuita"
-    )
-
-    need_new_search: bool = Field(
-        description="True se tutte le fonti sono state scartate e serce un approccio completamente diverso. False se almeno una fonte utile è stata trovata"
-    )
+class SourceEvaluationSchema(BaseModel):
+    judgments: List[SingleJudgment]
 
 
 class CompletenessEvaluationSchema(BaseModel): 

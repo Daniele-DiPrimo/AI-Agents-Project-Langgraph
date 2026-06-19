@@ -33,7 +33,7 @@ def search_tool(giustificazione:str, query: str) -> str:
     - query: Le parole chiave in inglese.
     """
     risposta = tavily.invoke({"query": query})
-    return str(risposta)
+    return risposta
 
 @tool(args_schema=SearchSchema)
 def search_semantic_scholar(giustificazione: str, query: str) -> str:
@@ -81,7 +81,7 @@ def search_semantic_scholar(giustificazione: str, query: str) -> str:
         return f"Errore durante la ricerca accademica: {str(e)}"
     
 @tool
-async def ricerca_krag_unificata(query_ricerca: str) -> str:
+async def ricerca_krag_unificata(query: str) -> str:
     """
     Usa questo strumento per cercare informazioni nel Knowledge Graph.
     Passa una domanda chiara o un concetto per cui scrivere l'articolo (es. "Scrivi un articolo sugli integrali").
@@ -89,12 +89,12 @@ async def ricerca_krag_unificata(query_ricerca: str) -> str:
     le affermazioni chiave da supportare e i nomi dei file PDF da citare.
     """
     try:
-        print(f"🔍 [Planner] Esecuzione Ricerca K-RAG per: '{query_ricerca}'")
+        print(f"🔍 [Planner] Esecuzione Ricerca K-RAG per: '{query}'")
         
         # Calcola l'embedding della query
         risultato_embedding = embedder.models.embed_content(
             model="gemini-embedding-2",
-            contents=query_ricerca
+            contents=query
         )
         vettore = risultato_embedding.embeddings[0].values
         
@@ -114,4 +114,4 @@ async def ricerca_krag_unificata(query_ricerca: str) -> str:
         return f"Errore durante la ricerca nel Knowledge Graph: {str(e)}"
 
 
-blog_tools = [search_semantic_scholar, search_tool, ricerca_krag_unificata]
+blog_tools = [search_semantic_scholar, search_tool]

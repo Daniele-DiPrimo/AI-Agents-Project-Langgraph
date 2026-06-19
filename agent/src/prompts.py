@@ -1,15 +1,18 @@
 # src/prompts.py
 
-def get_classifier_prompt(user_prompt_safe: str) -> str:
-    return f"""Sei un classificatore chirurgico per un blog universitario.
-    Devi analizzare ESATTAMENTE questa richiesta dell'utente: "{user_prompt_safe}"
-
+def get_classifier_prompt() -> str:
+    return f"""Sei il primo nodo di un sistema agentico, responsabile dell'elaborazione della richiesta dell'utente umano. 
+    Il sistema agentico vuole agire su un blog universitario, ove è possibile scrivere: ArticoloTeorico, TechNews o Eserciziaro su tutte le materie del corso.
+    Il tuo compito è riempire variabili di stato che esprimono al meglio la volontà dell'utente. 
+    
     REGOLE DI COMPILAZIONE DEL JSON:
-    - intent: Se la richiesta contiene "teoria", "spiega" o "come funziona", scrivi "Teoria". Se contiene "news", "notizie" o "novità", scrivi "News". Se contiene "esercizio", scrivi "Esercizio".
-    - macro_domain: La materia generale deve essere ESCLUSIVAMENTE una delle seguenti ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
-    - specific_topic: L'argomento preciso. Estrailo direttamente dal prompt.
-    - prompt_to_reasoner: Trasforma la richiesta dell'utente in una direttiva chiara per il nodo successivo che scriverà l'articolo.
-    - IMPORTANTE: Rimuovi QUALSIASI apostrofo, virgoletta o carattere speciale (es. $, '\', /) dai valori che generi nel JSON. Usa solo lettere e spazi.
+    - intent: Intento primario. La scelta è su ArticoloTeorico [Destinato alla spiegazione di concetti presenti nel programma della materia], TechNews [Notizie Tech di attualità], Eserciziario [Per esercitazioni guidate]. 
+        output atteso: ArticoloTeorico, TechNews, Eserciziario
+    - subject: La materia cui si identifica la richiesta.
+        output atteso (una tra queste): ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
+    - specific_topic: Argomento su cui vuole vertere la volontà dell'umanbo
+    -prompt_to_reasoner: Scrivi il prompt che andrà in ingresso al PlannerNode, responsabile di creare un piano di ricerca per il caso analizzato.
+    - IMPORTANTE: Usa solo lettere e spazi, NO CARATTERI SPECIALI.
     """
 
 def get_classifier_fallback(user_prompt_safe: str) -> str:
@@ -85,64 +88,54 @@ def get_metadata_extractor_prompt() -> str:
     1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].
     2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA."""
 
-def get_planner_prompt(intent: str, macro_domain: str, specific_topic: str, prompt_to_reasoner: str, missing_info: str, is_krag_consulted: bool) -> str:
-    if not is_krag_consulted:
-        istruzione_krag = "3. Devi OBBLIGATORIAMENTE cercare prima le informazioni nel Knowledge Graph locale usando il tool 'ricerca_krag_unificata'."
-    else:
-        istruzione_krag = """3. Il Knowledge Graph locale è GIÀ STATO CONSULTATO. Ti è TASSATIVAMENTE VIETATO ripetere questa ricerca. 
-        Ora devi procedere a integrare le informazioni usando esclusivamente 'tavily' o 'semantic_scholar' se necessario, oppure fermarti."""
-
-    return f"""Sei l'Agente Ricercatore Capo. Il tuo unico scopo è pianificare ed eseguire la ricerca di informazioni chiamando i tool appropriati.
-
+def get_planner_prompt(intent: str, subject: str, specific_topic: str, prompt_to_reasoner: str, missing_info: str) -> str:
+    return f"""Sei il nodo responsabile di redigere un piano operativo volta alla ricerca di informazioni per un Blog Universitario. 
+    Prima di te, un nodo ha elaborato la richiesta dell'utente, l'output generato mira a darti il contesto su cui dovrai fondare il tuo piano di ricerca.
     CONTESTO DELLA RICERCA:
-    - Intent: {intent}
-    - Dominio: {macro_domain}
-    - Topic specifico: {specific_topic}
-
-    OBIETTIVO FINALE DEL REDATTORE (Usa questo SOLO come contesto per capire cosa cercare):
-    "{prompt_to_reasoner}"
-
+    - Intent: {intent} --> Tipologia di articolo.
+    - Subject: {subject} --> Materia in questione
+    - Specific_topic: {specific_topic} --> Argomento specifico
+    - prompt_to_you: {prompt_to_reasoner}
+    
     STATUS RICERCA ATTUALE (Feedback del Revisore):
-    "{missing_info}"
-
+    Se {missing_info} NON è vuoto, usa quelle indicazioni come priorità assoluta di ricerca. Se è vuoto, procedi con la normale ricerca basata su specific_topic e prompt_to_reasoner.
+    
     REGOLE DI SELEZIONE DEI TOOL:
-    - Usa 'tavily' per ricerche generiche, notizie recenti (News) o concetti di base.
-    - Usa 'semantic_scholar' per ricerche accademiche, paper e teoria approfondita.
-    - Usa 'ricerca_krag_unificata' per cercare informazioni nel Knowledge Graph.
-
+    - ALLA PRIMA ITERAZIONE, CHIAMARE OBBLIGATORIAMENTE IL TOOL DEL RAG PER RECUPERARE INFO
+    - Chiama il tool tavily per ricerche generiche, notizie recenti (News) o concetti di base.
+    - Chiama il tool semantic_scholar per ricerche accademiche, paper e teoria approfondita.
+    
     REGOLE OPERATIVE RIGOROSE:
-    1. Usa l'OBIETTIVO FINALE per capire il livello di dettaglio e il taglio che dovrà avere l'articolo, formulando query di ricerca precise.
-    2. Ti è ASSOLUTAMENTE VIETATO scrivere l'articolo o rispondere alla direttiva dell'Obiettivo Finale. Devi SOLO cercare e inoltrare i risultati grezzi.
-    {istruzione_krag}
-    4. Successivamente integra con almeno una ricerca su Tavily o Semantic Scholar.
-    5. Se ritieni che le informazioni presenti nella cronologia siano sufficienti per coprire l'Obiettivo Finale, fermati e rispondi senza invocare ulteriori tool.
+    1. Ti è ASSOLUTAMENTE VIETATO scrivere l'articolo o rispondere alla direttiva dell'Obiettivo Finale.
     """
 
 def get_source_evaluator_prompt() -> str:
     return """Sei un revisore accademico spietato.
-    Analizza i risultati delle ricerche. Per ogni fonte valuta da 0.0 a 1.0:
+    Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY. 
+    Analizza TUTTE le fonti. Per ciascuna fonte valuta da 0.0 a 1.0 i seguenti criteri:
+
     1. 'source_reliability': L'affidabilità della fonte.
         - 0.9/1.0 = Paper accademici, documentazione ufficiale, blog tecnici riconosciuti.
         - 0.6/0.8 = Articoli divulgativi validi ma generalisti.
         - < 0.5 = Forum non verificati, spam, fonti dubbie.
-    2. 'information_relevance': L'attinenza al topic richiesto.
+        
+    2. 'source_relevance': L'attinenza al topic richiesto.
         - 0.9/1.0 = Contiene dati tecnici, codice o definizioni esatte richieste.
         - 0.5/0.8 = Parla dell'argomento ma in modo superficiale.
         - < 0.5 = Fuori tema o menziona l'argomento solo di sfuggita.
 
     Devi essere severo. Se la fonte è generica, penalizzala.
 
-    Usa ESATTAMENTE questa struttura JSON:
+    Usa ESATTAMENTE questa struttura JSON, creando un oggetto dentro l'array "judgments" per OGNI fonte che ti viene fornita:
     {
-    "judgments": [
+      "judgments": [
         {
-        "index_source": 0,
-        "source_reliability": 0.0,
-        "information_relevance": 0.0,
-        "reasoning": "Spiega brevemente i due punteggi assegnati"
+          "source_url": "L'URL esatto della fonte valutata",
+          "source_reliability": 0.0,
+          "source_relevance": 0.0,
+          "reasoning": "Spiega brevemente i due punteggi assegnati"
         }
-    ],
-    "need_new_search": false
+      ]
     }"""
 
 def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:

@@ -28,7 +28,7 @@ embedder = genai.Client()
 
 # --- 3. NODO CLASSIFICATORE ---
 def classifier_node(state: BlogState):
-    """Analizza il prompt originale in modo infallibile e popola lo stato."""
+    """Analizza il prompt originale e popola lo stato."""
     
     user_prompt = "Nessun prompt riconosciuto." # Fallback di base
     
@@ -44,36 +44,29 @@ def classifier_node(state: BlogState):
 
     # Se l'input è vuoto, fermiamo il modello prima che provi a fare JSON casuali
     if not user_prompt_safe:
-        return {"intent": "Sconosciuto",
-        "macro_domain": "Errore", 
-        "specific_topic": "Nessun Input Fornito",
-        "prompt_to_reasoner": "L'utente non ha fornito alcun input valido. Chiedi all'utente di specificare un argomento."
-        }
+        return Command(goto=END)
 
-    system_prompt = get_classifier_prompt(user_prompt_safe)
+    system_prompt = get_classifier_prompt()
     
     try:
         # Usiamo with_structured_output per forzare il JSON
         structured_llm = classifier_llm.with_structured_output(ClassificationSchema)
         
-        result = structured_llm.invoke([SystemMessage(content=system_prompt)])
+        result = structured_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Istruzioni specifiche per la redazione inviate dal coordinatore:\n{user_prompt_safe}")])
         
         return {
             "intent": result.intent, 
-            "macro_domain": result.macro_domain, 
+            "subject": result.subject, 
             "specific_topic": result.specific_topic,
             "prompt_to_reasoner": result.prompt_to_reasoner
         }
     except Exception as e:
         print(f"⚠️ Errore API Groq nel Classifier: {e}")
-        # Se Groq presenta errori (es. rate limit o failed generation), non facciamo crollare l'intero Studio
-        fallback_prompt = get_classifier_fallback(user_prompt_safe)
-        return {
-            "intent": "Teoria", # Default sicuro
-            "macro_domain": "Generico", 
-            "specific_topic": user_prompt_safe[:50], # Usa l'input dell'utente come topic temporaneo
-            "prompt_to_reasoner": fallback_prompt
-        }
+        # Se Groq presenta errori (es. rate limit o failed generation)
+        return Command(goto=END)
+
 
 async def writer_node(state: BlogState) -> dict:
     """
@@ -84,7 +77,7 @@ async def writer_node(state: BlogState) -> dict:
 
     # 1. Estrazione dei dati dallo stato
     intent             = state.get("intent", "Unknown")
-    macro_domain       = state.get("macro_domain", "Unknown")
+    subject            = state.get("subject", "Unknown")
     specific_topic     = state.get("specific_topic", "Unknown")
     prompt_to_reasoner = state.get("prompt_to_reasoner", "Scrivi in base al materiale fornito.")
     research_material  = state.get("research_material", "") # Materiale dal Web validato
@@ -115,10 +108,10 @@ async def writer_node(state: BlogState) -> dict:
     # 3. Routing interno del System Prompt basato sull'intent (Aggiornato per supportare entrambe le fonti)
     if intent.lower() == "esercizio":
         print("🎓 -> Modalità: Professore (Esercizi)")
-        sys_prompt = get_writer_exercise_prompt(macro_domain, specific_topic)
+        sys_prompt = get_writer_exercise_prompt(subject, specific_topic)
     else:
         print(f"📝 -> Modalità: Redattore (Tipo: {intent})")
-        sys_prompt = get_writer_article_prompt(intent, macro_domain, specific_topic)
+        sys_prompt = get_writer_article_prompt(intent, subject, specific_topic)
 
     # Impacchettiamo il mega-testo unificato nel messaggio per l'LLM
     context_msg = HumanMessage(content=f"Materiale di riferimento totale per la redazione:\n{contesto_unificato}")

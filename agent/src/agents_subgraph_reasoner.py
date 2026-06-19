@@ -3,9 +3,9 @@ import re
 from langchain_groq import ChatGroq
 from langchain_core.messages import  SystemMessage, HumanMessage
 
-from src.structures import  FullSourcesEvaluationSchema, CompletenessEvaluationSchema
+from src.structures import CompletenessEvaluationSchema, SourceEvaluationSchema
 from src.state import  ReasonerState
-from src.tools import blog_tools
+from src.tools import blog_tools, ricerca_krag_unificata
 
 from src.prompts import (
     get_planner_prompt,
@@ -13,18 +13,18 @@ from src.prompts import (
     get_completeness_evaluator_prompt
 )
 
-planner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+reasoner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 source_evaluator_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 
-def planner_node(state: ReasonerState) -> dict:
+def reasoner_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile del piano esecutivo per la ricerca.
     Decide quali tool chiamare e genera le query.
     Scrive solo in: messages (loop ReAct interno).
     """
  
-    intent        = state.get("intent", "NotSpecified")
-    macro_domain  = state.get("macro_domain", "NotSpecified")
+    intent = state.get("intent", "NotSpecified")
+    subject  = state.get("subject", "NotSpecified")
     specific_topic = state.get("specific_topic", "NotSpecified")
     prompt_to_reasoner = state.get("prompt_to_reasoner", "NotSpecified")
 
@@ -37,25 +37,23 @@ def planner_node(state: ReasonerState) -> dict:
 
     if not is_krag_consulted:
         print("🔍 [Planner] Primo avvio: Il K-RAG deve essere consultato.")
-        tool_disponibili = blog_tools
-    else:
+        tool_disponibili = ricerca_krag_unificata
         print("⏭️ [Planner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
-        tool_disponibili = [t for t in blog_tools if t.name != "ricerca_krag_unificata"]
+        tool_disponibili = blog_tools
 
     # Genera il prompt dinamicamente
     sys_prompt = get_planner_prompt(
-        intent, macro_domain, specific_topic, 
-        prompt_to_reasoner, missing_info, is_krag_consulted
+        intent, subject, specific_topic, 
+        prompt_to_reasoner, missing_info
     )
 
-    planner_llm_w_tools = planner_completeness_llm.bind_tools(
+    reasoner_llm_w_tools = reasoner_completeness_llm.bind_tools(
         tool_disponibili,
         tool_choice="auto",
         parallel_tool_calls=False
     )
- 
-    messages = [SystemMessage(content=sys_prompt)]
-    answer = planner_llm_w_tools.invoke(messages)
+
+    answer = reasoner_llm_w_tools.invoke([SystemMessage(content=sys_prompt)])
  
     return {"tool_plan": answer.tool_calls}
 
@@ -66,153 +64,122 @@ async def tool_executor_node(state: ReasonerState) -> dict:
     tool_plan = state.get("tool_plan", [])
     raw_results = []
     graph_results = state.get("graph_results", "")
-    visited_urls = state.get("visited_urls", [])
     
     # Creiamo un dizionario veloce per richiamare i tuoi tool reali tramite il loro nome
-    tools_by_name = {tool.name: tool for tool in blog_tools}
+    tools_by_name = {tool.name: tool for tool in (blog_tools + [ricerca_krag_unificata])}
 
-    # Iteriamo sulle chiamate native estratte nel Planner
-    for tool_call in tool_plan:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"] # È già un dizionario con gli argomenti (es. {"query": "..."})
+    tool_call = tool_plan[-1]
+    
+    tool_name = tool_call["name"]
+    tool_args = tool_call["args"] # È già un dizionario con gli argomenti (es. {"query": "..."})
         
-        if tool_name in tools_by_name:
-            try:
-                # Eseguiamo il tool passando gli argomenti scompattati
-                result = await tools_by_name[tool_name].ainvoke(tool_args)
-                result_str = str(result)
-                
-                extracted_links = re.findall(r'https?://[^\s"\'\},\]]+', result_str)
-                
-                for link in extracted_links:
-                    if link not in visited_urls:
-                        visited_urls.append(link)
+    try:
+        # Eseguiamo il tool passando gli argomenti scompattati
+        result = await tools_by_name[tool_name].ainvoke(tool_args)
 
-                # Salviamo il risultato nei campi appropriati.
-                if(tool_name == "ricerca_krag_unificata"):
-                    graph_results = result_str
-                else:
-                    raw_results.append({
-                        "tool_used": tool_name,
-                        "query_used": str(tool_args),
-                        "raw_output": result_str
-                    })
-                print(f"   -> Tool '{tool_name}' eseguito con successo.")
-            except Exception as e:
-                print(f"   -> ⚠️ Errore nell'esecuzione del tool {tool_name}: {e}")
+        # Salviamo il risultato nei campi appropriati.
+        if(tool_name == "ricerca_krag_unificata"):
+            graph_results = result
+        else:
+            raw_results = result
+        print(f"   -> Tool '{tool_name}' eseguito con successo.")
+    except Exception as e:
+        print(f"   -> ⚠️ Errore nell'esecuzione del tool {tool_name}: {e}")
 
     return {"raw_results": raw_results,
-            "visited_urls": visited_urls,
-            "graph_results": graph_results
+            "graph_results": graph_results,
+            "tool_used": tool_name,
+            "tool_args": (tool_args),
             }
     
 def source_evaluator_node(state: ReasonerState) -> dict:
-    """
-    Nodo responsabile ESCLUSIVAMENTE della valutazione delle fonti.
-    """
-    print("🔍 [Source Evaluator] Valutazione granulare delle fonti...")
+    print("🔍 [Source Evaluator] Valutazione batch delle fonti...")
+
+    raw_results = state.get("raw_results", {})
+    results = raw_results.get("results", [])
+    query_used = raw_results.get("query", "Query Sconosciuta")
+
+    if not results:
+        return {"approved_sources": [], "not_approved_sources": [], "sources_evaluated": False}
 
     structured_source_evaluator_llm = source_evaluator_llm.with_structured_output(
-        FullSourcesEvaluationSchema,
+        SourceEvaluationSchema,
         method="json_mode"
     )
 
-    sys_prompt = get_source_evaluator_prompt()
-    
-    raw_results = state.get("raw_results", [])
-    if not raw_results:
-        return {"sources_evaluated": False, "approved_sources": state.get("approved_sources", [])}
+    # Prepara il testo con TUTTE le fonti
+    sources_text = f"QUERY: {query_used}\n\n"
+    for i, r in enumerate(results):
+        url = r.get("url", "URL Mancante")
+        content = r.get("content", r.get("raw_output", "Contenuto Mancante"))
+        sources_text += f"--- FONTE {i} ---\nURL: {url}\nContent: {content}\n\n"
 
-    results_text = "\n\n".join([
-        f"--- ID FONTE: {i} ---\nTOOL: {res['tool_used']} | QUERY: {res['query_used']}\nOUTPUT: {res['raw_output']}\n-------------------" 
-        for i, res in enumerate(raw_results)
-    ])
-    
     llm_input = [
-        SystemMessage(content=sys_prompt),
-        HumanMessage(content=f"RISULTATI GREZZI DA VALUTARE:\n{results_text}")
+        SystemMessage(content=get_source_evaluator_prompt()),
+        HumanMessage(content=f"Valuta le seguenti fonti:\n{sources_text}")
     ]
 
-    judgment: FullSourcesEvaluationSchema = structured_source_evaluator_llm.invoke(llm_input)
+    # Una singola chiamata LLM
+    judgment_batch = structured_source_evaluator_llm.invoke(llm_input)
 
     THRESHOLD_RELIABILITY = 0.70
     THRESHOLD_RELEVANCE = 0.70
-    
+
     approved_sources = []
     not_approved_sources = []
-    
-    for v in judgment.judgments:
-        # LOGICA AND: Deve superare ENTRAMBE le soglie
-        if v.source_reliability >= THRESHOLD_RELIABILITY and v.information_relevance >= THRESHOLD_RELEVANCE:
-            idx = v.index_source
-            whole_content = "Testo originale non trovato."
-            id_label = "Fonte Sconosciuta" 
-            
-            if 0 <= idx < len(raw_results):
-                whole_content = raw_results[idx]['raw_output']
-                id_label = f"Ricerca {idx} tramite {raw_results[idx]['tool_used']}"
-            
-            approved_sources.append({
-                "id_source": id_label, 
-                "source_reliability": v.source_reliability,
-                "information_relevance": v.information_relevance,
-                "overall_score": (v.source_reliability + v.information_relevance) / 2.0, 
-                "reasoning": v.reasoning, 
-                "content": whole_content 
-            })
+
+    # Mappa i risultati basandoti sugli URL per recuperare il contenuto originale
+    results_by_url = {r.get("url"): r for r in results}
+
+    for j in judgment_batch.judgments:
+        source_data = {
+            "source_reliability": j.source_reliability,
+            "source_relevance": j.source_relevance,
+            "overall_score": (j.source_reliability + j.source_relevance) / 2.0, 
+            "reasoning": j.reasoning, 
+            "content": results_by_url.get(j.source_url, {}).get("content", ""),
+            "id_source": j.source_url
+        }
+        
+        if j.source_reliability >= THRESHOLD_RELIABILITY and j.source_relevance >= THRESHOLD_RELEVANCE: 
+            approved_sources.append(source_data)
         else:
-            not_approved_sources.append(v)
+            not_approved_sources.append(source_data)
 
-    print(f"   -> Fonti analizzate: {len(judgment.judgments)} | "
-          f"Approvate: {len(approved_sources)} | "
-          f"Bocciate: {len(not_approved_sources)}")
+    return {
+        "approved_sources": approved_sources,
+        "not_approved_sources": not_approved_sources,
+        "sources_evaluated": len(approved_sources) > 0
+    }
 
-    if judgment.need_new_search or len(approved_sources) == 0:
-        return {
-            "approved_sources": state.get("approved_sources", []), 
-            "sources_evaluated": False
-        }
-    else:
-        existing = state.get("approved_sources", [])
-        return {
-            "approved_sources": existing + approved_sources,
-            "sources_evaluated": True
-        }
 
 def completeness_evaluator_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile della valutazione della completezza complessiva del materiale.
     """
     print("⚖️ [Completeness Evaluator] Controllo completezza materiale...")
-    completeness_structured_llm = planner_completeness_llm.with_structured_output(
+    completeness_structured_llm = reasoner_completeness_llm.with_structured_output(
         CompletenessEvaluationSchema
     )
 
     intent         = state.get("intent", "NotSpecified")
-    macro_domain   = state.get("macro_domain", "NotSpecified")
+    subject   = state.get("subject", "NotSpecified")
     specific_topic = state.get("specific_topic", "NotSpecified")
     approved_sources = state.get("approved_sources", [])
-    sources_evaluated = state.get("sources_evaluated", False)
     iterations     = state.get("iterations", 0)
+    sources_evaluated = state.get("sources_evaluated", False)
 
     MAX_ITERATIONS = 5 
-    
-    # Calcoliamo subito quale sarà la prossima iterazione
-    next_iteration = iterations + 1
 
     # 1. Gestione uscita anticipata se mancano fonti valutate
-    if not sources_evaluated:
-        if next_iteration >= MAX_ITERATIONS:
-            # Se siamo al limite, passiamo oltre per fargli compilare comunque il (poco) materiale che ha
-            pass 
-        else:
+    if not sources_evaluated and iterations < MAX_ITERATIONS:
             return {
                 "is_complete": False,
-                "iterations": next_iteration,
+                "iterations": iterations + 1,
                 "missing_info": "⚠️ Tutte le fonti recenti sono state scartate. Usa parole chiave o tool diversi per la prossima ricerca."
             }
 
-    sys_prompt = get_completeness_evaluator_prompt(intent, macro_domain, specific_topic)
+    sys_prompt = get_completeness_evaluator_prompt(intent, subject, specific_topic)
 
     sources_summary = "\n".join([
         f"- {s.get('id_source', 'N/A')} (Affidabilità: {s.get('source_reliability', 0)} | Attinenza: {s.get('information_relevance', 0)}): {s.get('reasoning', '')}\n  Testo Originale: {s.get('content', '')}"
@@ -225,34 +192,26 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
         human_msg
     ])
 
-    # 2. Controllo usando NEXT_ITERATION invece di iterations
-    if answer.is_complete or next_iteration >= MAX_ITERATIONS:
-        avviso_limite = "\n> ⚠️ Avviso: Ricerca interrotta per limite di tentativi. Il materiale potrebbe essere parziale.\n" if not answer.is_complete else ""
+    if answer.is_complete or iterations >= MAX_ITERATIONS:
 
         research_material = f"# Materiale di ricerca validato\n\n"
-        research_material += f"**Tipo articolo:** {intent} | **Dominio:** {macro_domain} | **Topic:** {specific_topic}\n"
-        research_material += avviso_limite + "\n"
+        research_material += f"**Tipo articolo:** {intent} | **Dominio:** {subject} | **Topic:** {specific_topic}\n"
         
         for s in approved_sources:
             research_material += f"## {s.get('id_source', 'Sconosciuta')} (Affidabilità: {s.get('source_reliability', 0.0):.1f} | Attinenza: {s.get('information_relevance', 0.0):.1f})\n"
             research_material += f"**Motivazione:** {s.get('reasoning', '')}\n\n"
             research_material += f"**Testo grezzo dal web:**\n> {s.get('content', 'Nessun testo estratto.')}\n\n"
             research_material += "---\n\n"
-
-        if next_iteration >= MAX_ITERATIONS:
-            print(f"⚠️ [Coverage Evaluator] Raggiunto limite iterazioni ({next_iteration}). Passo al Writer quello che ho.")
-        else:
-            print(f"✅ [Coverage Evaluator] Materiale sufficiente. Fonti approvate in totale: {len(approved_sources)}")
             
         return {
             "is_complete": True, 
             "research_material": research_material,
-            "iterations": next_iteration # Aggiorniamo comunque il contatore per coerenza
+            "iterations": iterations + 1
         }
     else:
         print(f"🔄 [Coverage Evaluator] Materiale incompleto. Manca: {answer.missing_info}")
         return {
             "is_complete": False,
-            "iterations": next_iteration,
+            "iterations": iterations + 1,
             "missing_info": f"INFO MANCANTI: Il revisore ha detto che manca: '{answer.missing_info}'. Fai un'altra ricerca mirata su questo."
         }
