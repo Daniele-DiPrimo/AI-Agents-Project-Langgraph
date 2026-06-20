@@ -98,7 +98,7 @@ def get_planner_prompt(intent: str, subject: str, specific_topic: str, prompt_to
     - prompt_to_you: {prompt_to_reasoner}
     
     STATUS RICERCA ATTUALE (Feedback del Revisore):
-    Se {missing_info} NON è vuoto, usa quelle indicazioni come priorità assoluta di ricerca. Se è vuoto, procedi con la normale ricerca basata su specific_topic e prompt_to_reasoner.
+    Se {missing_info} NON è vuoto, usa quelle indicazioni per la ricerca. Se è vuoto, procedi con la normale ricerca basata su subject, specific_topic e prompt_to_you.
     
     REGOLE DI SELEZIONE DEI TOOL:
     - ALLA PRIMA ITERAZIONE, CHIAMARE OBBLIGATORIAMENTE IL TOOL DEL RAG PER RECUPERARE INFO
@@ -106,12 +106,14 @@ def get_planner_prompt(intent: str, subject: str, specific_topic: str, prompt_to
     - Chiama il tool semantic_scholar per ricerche accademiche, paper e teoria approfondita.
     
     REGOLE OPERATIVE RIGOROSE:
-    1. Ti è ASSOLUTAMENTE VIETATO scrivere l'articolo o rispondere alla direttiva dell'Obiettivo Finale.
+    1.Ti è ASSOLUTAMENTE VIETATO rispondere con del testo.
+    2.DEVI ESEGUIRE ESCLUSIVAMENTE LA CHIAMATA A UNA FUNZIONE (TOOL CALL).
+
     """
 
 def get_source_evaluator_prompt() -> str:
     return """Sei un revisore accademico spietato.
-    Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY. 
+    Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY (volonta dell'utente). 
     Analizza TUTTE le fonti. Per ciascuna fonte valuta da 0.0 a 1.0 i seguenti criteri:
 
     1. 'source_reliability': L'affidabilità della fonte.
@@ -119,24 +121,13 @@ def get_source_evaluator_prompt() -> str:
         - 0.6/0.8 = Articoli divulgativi validi ma generalisti.
         - < 0.5 = Forum non verificati, spam, fonti dubbie.
         
-    2. 'source_relevance': L'attinenza al topic richiesto.
+    2. 'source_relevance': L'attinenza alla QUERY.
         - 0.9/1.0 = Contiene dati tecnici, codice o definizioni esatte richieste.
         - 0.5/0.8 = Parla dell'argomento ma in modo superficiale.
         - < 0.5 = Fuori tema o menziona l'argomento solo di sfuggita.
 
     Devi essere severo. Se la fonte è generica, penalizzala.
-
-    Usa ESATTAMENTE questa struttura JSON, creando un oggetto dentro l'array "judgments" per OGNI fonte che ti viene fornita:
-    {
-      "judgments": [
-        {
-          "source_url": "L'URL esatto della fonte valutata",
-          "source_reliability": 0.0,
-          "source_relevance": 0.0,
-          "reasoning": "Spiega brevemente i due punteggi assegnati"
-        }
-      ]
-    }"""
+    """
 
 def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:
     return f"""Sei il Chief Editor accademico di un blog universitario tecnico.

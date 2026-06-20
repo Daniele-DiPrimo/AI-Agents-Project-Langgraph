@@ -24,7 +24,6 @@ class SingleJudgment(BaseModel):
 class SourceEvaluationSchema(BaseModel):
     judgments: List[SingleJudgment]
 
-
 class CompletenessEvaluationSchema(BaseModel): 
     is_complete: bool = Field(
         description="MANDATORIO: BOOLEANO (true/false). Restituisci true SOLO SE hai abbastanza paragrafi e concetti tecnici per scrivere un articolo esaustivo. Altrimenti false."

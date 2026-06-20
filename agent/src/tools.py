@@ -25,7 +25,7 @@ tavily = TavilySearch(
 python_tool = PythonREPLTool()
 
 @tool(args_schema=SearchSchema)
-def search_tool(giustificazione:str, query: str) -> str:
+def search_tool(giustificazione:str, query: str) -> dict:
     """
     Cerca informazioni sul Web. 
     Usa questo tool per TEORIA GENERALE, notizie, tutorial.
@@ -36,7 +36,7 @@ def search_tool(giustificazione:str, query: str) -> str:
     return risposta
 
 @tool(args_schema=SearchSchema)
-def search_semantic_scholar(giustificazione: str, query: str) -> str:
+def search_semantic_scholar(giustificazione: str, query: str) -> dict: # <-- Cambiato da str a dict
     """
     Cerca paper accademici e scientifici tramite Semantic Scholar. 
     USA QUESTO TOOL per la ricerca di frontiera.
@@ -61,27 +61,43 @@ def search_semantic_scholar(giustificazione: str, query: str) -> str:
         response.raise_for_status()
         data = response.json()
         
+        # Se non ci sono risultati, ritorna il dizionario vuoto standard
         if data.get("total", 0) == 0 or "data" not in data:
-            return "Nessun paper rilevante trovato per questa query."
+            return {"query": query, "results": []}
             
         risultati = []
         for paper in data["data"]:
             autori = ", ".join([a["name"] for a in paper.get("authors", [])])
-            risultati.append(
+            
+            # Assembliamo il testo utile da passare all'LLM valutatore
+            content = (
                 f"Titolo: {paper.get('title')}\n"
                 f"Anno: {paper.get('year')}\n"
                 f"Autori: {autori}\n"
-                f"Abstract: {paper.get('abstract')}\n"
-                f"URL: {paper.get('url')}\n"
-                "---"
+                f"Abstract: {paper.get('abstract')}"
             )
-        return "\n".join(risultati)
+            
+            # Creiamo il formato atteso: { "url": ..., "content": ... }
+            risultati.append({
+                "url": paper.get("url", "URL Mancante"),
+                "content": content
+            })
+            
+        # Ritorna il formato esatto per il source_evaluator
+        return {
+            "query": query,
+            "results": risultati
+        }
         
     except Exception as e:
-        return f"Errore durante la ricerca accademica: {str(e)}"
+        # Anche in caso di errore, mantieni la struttura per non far crashare il grafo
+        return {
+            "query": query, 
+            "results": [{"url": "Errore", "content": f"Errore durante la ricerca: {str(e)}"}]
+        }
     
 @tool
-async def ricerca_krag_unificata(query: str) -> str:
+async def ricerca_krag_unificata(query: str) -> list[dict]:
     """
     Usa questo strumento per cercare informazioni nel Knowledge Graph.
     Passa una domanda chiara o un concetto per cui scrivere l'articolo (es. "Scrivi un articolo sugli integrali").

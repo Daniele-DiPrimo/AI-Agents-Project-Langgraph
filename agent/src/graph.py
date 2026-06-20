@@ -18,6 +18,7 @@ builder.add_edge(START, "classifier")
 builder.add_edge("classifier", "reasoner_subgraph")
 builder.add_edge("reasoner_subgraph", "writer")
 builder.add_edge("writer", "human_review")
+builder.add_edge("human_review", "save_article")
 # human_review_node decide dinamicamente tramite Command() se andare a "writer", "save_article" o END
 builder.add_edge("save_article", END) # Il salvataggio porta sempre alla fine del grafo
 

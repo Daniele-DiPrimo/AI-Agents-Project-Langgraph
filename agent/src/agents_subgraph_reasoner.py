@@ -1,16 +1,19 @@
-import re
-
 from langchain_groq import ChatGroq
 from langchain_core.messages import  SystemMessage, HumanMessage
+from langgraph.types import Command
 
 from src.structures import CompletenessEvaluationSchema, SourceEvaluationSchema
+
 from src.state import  ReasonerState
+
 from src.tools import blog_tools, ricerca_krag_unificata
 
 from src.prompts import (
+    get_krag_evaluator_prompt,
     get_planner_prompt,
     get_source_evaluator_prompt,
-    get_completeness_evaluator_prompt
+    get_completeness_evaluator_prompt,
+    get_web_evaluator_prompt
 )
 
 reasoner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
@@ -37,7 +40,9 @@ def reasoner_node(state: ReasonerState) -> dict:
 
     if not is_krag_consulted:
         print("🔍 [Planner] Primo avvio: Il K-RAG deve essere consultato.")
-        tool_disponibili = ricerca_krag_unificata
+        tool_disponibili.append(ricerca_krag_unificata)
+        
+    else:
         print("⏭️ [Planner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
         tool_disponibili = blog_tools
 
@@ -49,7 +54,7 @@ def reasoner_node(state: ReasonerState) -> dict:
 
     reasoner_llm_w_tools = reasoner_completeness_llm.bind_tools(
         tool_disponibili,
-        tool_choice="auto",
+        tool_choice="any",
         parallel_tool_calls=False
     )
 
@@ -82,33 +87,42 @@ async def tool_executor_node(state: ReasonerState) -> dict:
             graph_results = result
         else:
             raw_results = result
+            
         print(f"   -> Tool '{tool_name}' eseguito con successo.")
     except Exception as e:
         print(f"   -> ⚠️ Errore nell'esecuzione del tool {tool_name}: {e}")
 
-    return {"raw_results": raw_results,
-            "graph_results": graph_results,
-            "tool_used": tool_name,
-            "tool_args": (tool_args),
-            }
+    state_update = {
+        "raw_results": raw_results,
+        "graph_results": graph_results,
+        "tool_used": tool_name,
+        "tool_args": (tool_args)
+    }
+
+    return state_update
     
 def source_evaluator_node(state: ReasonerState) -> dict:
     print("🔍 [Source Evaluator] Valutazione batch delle fonti...")
 
     raw_results = state.get("raw_results", {})
     results = raw_results.get("results", [])
-    query_used = raw_results.get("query", "Query Sconosciuta")
+    prompt_to_reasoner = state.get("prompt_to_reasoner", "")
+    graph_results = state.get("graph_results", [])
+    iteration = state.get("iterations", 0)
+
+    approved_sources = []
+    not_approved_sources = []
+
+    structured_source_evaluator_llm = source_evaluator_llm.with_structured_output(SourceEvaluationSchema)
+
 
     if not results:
         return {"approved_sources": [], "not_approved_sources": [], "sources_evaluated": False}
 
-    structured_source_evaluator_llm = source_evaluator_llm.with_structured_output(
-        SourceEvaluationSchema,
-        method="json_mode"
-    )
+    
 
     # Prepara il testo con TUTTE le fonti
-    sources_text = f"QUERY: {query_used}\n\n"
+    sources_text = f"QUERY: {prompt_to_reasoner}\n\n"
     for i, r in enumerate(results):
         url = r.get("url", "URL Mancante")
         content = r.get("content", r.get("raw_output", "Contenuto Mancante"))
@@ -125,11 +139,8 @@ def source_evaluator_node(state: ReasonerState) -> dict:
     THRESHOLD_RELIABILITY = 0.70
     THRESHOLD_RELEVANCE = 0.70
 
-    approved_sources = []
-    not_approved_sources = []
-
     # Mappa i risultati basandoti sugli URL per recuperare il contenuto originale
-    results_by_url = {r.get("url"): r for r in results}
+    results_by_url = {r.get("url"): r for r in results} 
 
     for j in judgment_batch.judgments:
         source_data = {
@@ -152,7 +163,6 @@ def source_evaluator_node(state: ReasonerState) -> dict:
         "sources_evaluated": len(approved_sources) > 0
     }
 
-
 def completeness_evaluator_node(state: ReasonerState) -> dict:
     """
     Nodo responsabile della valutazione della completezza complessiva del materiale.
@@ -168,6 +178,9 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
     approved_sources = state.get("approved_sources", [])
     iterations     = state.get("iterations", 0)
     sources_evaluated = state.get("sources_evaluated", False)
+    graph_results = state.get("graph_results", "")
+
+    sys_prompt = get_completeness_evaluator_prompt(intent, subject, specific_topic)
 
     MAX_ITERATIONS = 5 
 
@@ -176,10 +189,10 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
             return {
                 "is_complete": False,
                 "iterations": iterations + 1,
-                "missing_info": "⚠️ Tutte le fonti recenti sono state scartate. Usa parole chiave o tool diversi per la prossima ricerca."
+                "missing_info": ""
             }
 
-    sys_prompt = get_completeness_evaluator_prompt(intent, subject, specific_topic)
+    
 
     sources_summary = "\n".join([
         f"- {s.get('id_source', 'N/A')} (Affidabilità: {s.get('source_reliability', 0)} | Attinenza: {s.get('information_relevance', 0)}): {s.get('reasoning', '')}\n  Testo Originale: {s.get('content', '')}"
