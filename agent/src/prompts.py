@@ -1,5 +1,3 @@
-# src/prompts.py
-
 def get_classifier_prompt() -> str:
     return f"""Sei il primo nodo di un sistema agentico, responsabile dell'elaborazione della richiesta dell'utente umano. 
     Il sistema agentico vuole agire su un blog universitario, ove è possibile scrivere: ArticoloTeorico, TechNews o Eserciziaro su tutte le materie del corso.
@@ -10,13 +8,11 @@ def get_classifier_prompt() -> str:
         output atteso: ArticoloTeorico, TechNews, Eserciziario
     - subject: La materia cui si identifica la richiesta.
         output atteso (una tra queste): ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
-    - specific_topic: Argomento su cui vuole vertere la volontà dell'umanbo
+    - specific_topic: Argomento richiesto dall'utente.
     -prompt_to_reasoner: Scrivi il prompt che andrà in ingresso al PlannerNode, responsabile di creare un piano di ricerca per il caso analizzato.
     - IMPORTANTE: Usa solo lettere e spazi, NO CARATTERI SPECIALI.
     """
 
-def get_classifier_fallback(user_prompt_safe: str) -> str:
-    return f"Scrivi un articolo informativo riguardo il seguente argomento: {user_prompt_safe[:50]}"
 
 def get_writer_exercise_prompt(macro_domain: str, specific_topic: str) -> str:
     return f"""Sei un Professore Universitario esperto in '{macro_domain}'.
@@ -38,6 +34,7 @@ def get_writer_exercise_prompt(macro_domain: str, specific_topic: str) -> str:
     6. Scrivi in ITALIANO.
     """
 
+
 def get_writer_article_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:
     return f"""Sei l'autore principale di un blog tecnico universitario.
     Scrivi un articolo di tipo '{intent}' sulla materia '{macro_domain}' sull'argomento '{specific_topic}'.
@@ -56,6 +53,7 @@ def get_writer_article_prompt(intent: str, macro_domain: str, specific_topic: st
     - Usa sezioni ben divise con H2 e H3 per mappare la progressione logica dei concetti del grafo.
     - Includi una sezione finale "## Fonti" elencando ordinatamente tutte le fonti documentali e i link web rintracciati nel contesto.
     """
+
 
 def get_metadata_extractor_prompt() -> str:
     schema_richiesto = """
@@ -88,7 +86,8 @@ def get_metadata_extractor_prompt() -> str:
     1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].
     2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA."""
 
-def get_planner_prompt(intent: str, subject: str, specific_topic: str, prompt_to_reasoner: str, missing_info: str) -> str:
+
+def get_reasoner_prompt(intent: str, subject: str, specific_topic: str, prompt_to_reasoner: str, missing_info: str) -> str:
     return f"""Sei il nodo responsabile di redigere un piano operativo volta alla ricerca di informazioni per un Blog Universitario. 
     Prima di te, un nodo ha elaborato la richiesta dell'utente, l'output generato mira a darti il contesto su cui dovrai fondare il tuo piano di ricerca.
     CONTESTO DELLA RICERCA:
@@ -111,12 +110,17 @@ def get_planner_prompt(intent: str, subject: str, specific_topic: str, prompt_to
 
     """
 
+
 def get_source_evaluator_prompt() -> str:
     return """Sei un revisore accademico spietato.
-    Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY (volonta dell'utente). 
-    Analizza TUTTE le fonti. Per ciascuna fonte valuta da 0.0 a 1.0 i seguenti criteri:
+    Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY o PROMPT. 
+    
+    ATTENZIONE: DEVI obbligatoriamente utilizzare lo schema/funzione fornita per restituire i risultati. Non rispondere MAI con testo libero.
+    
+    Analizza TUTTE le fonti. Per ciascuna fonte estrai l'identificativo e valuta da 0.0 a 1.0 i seguenti criteri:
 
     1. 'source_reliability': L'affidabilità della fonte.
+        - 1.0 = Fonti provenienti dal tool K-RAG.
         - 0.9/1.0 = Paper accademici, documentazione ufficiale, blog tecnici riconosciuti.
         - 0.6/0.8 = Articoli divulgativi validi ma generalisti.
         - < 0.5 = Forum non verificati, spam, fonti dubbie.
@@ -126,8 +130,10 @@ def get_source_evaluator_prompt() -> str:
         - 0.5/0.8 = Parla dell'argomento ma in modo superficiale.
         - < 0.5 = Fuori tema o menziona l'argomento solo di sfuggita.
 
-    Devi essere severo. Se la fonte è generica, penalizzala.
+    Devi essere severo. Se la fonte è generica, penalizzala. 
+    Assicurati di generare un elemento nell'array di output per OGNI singola fonte fornita nel testo.
     """
+
 
 def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:
     return f"""Sei il Chief Editor accademico di un blog universitario tecnico.
@@ -136,7 +142,7 @@ def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_t
     OBIETTIVO: articolo di tipo [{intent}], materia [{macro_domain}], argomento [{specific_topic}].
 
     CRITERI DI SUFFICIENZA (Devono essere tutti soddisfatti):
-    1. Profondità tecnica: Ci sono dettagli tecnici, architettonici o matematici reali, non solo definizioni da dizionario?
+    1. Profondità tecnica: Ci sono dettagli tecnici, architettonici o matematici reali? O sono presenti solo definizioni da dizionario?
     2. Completezza: Le sfaccettature principali dell'argomento sono coperte?
     3. Praticità: È presente almeno un caso d'uso, un esempio pratico o del codice (se pertinente all'argomento)?
 

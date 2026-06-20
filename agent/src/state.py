@@ -14,7 +14,6 @@ class BlogState(TypedDict):
     specific_topic: str
     prompt_to_reasoner: str
     research_material: str
-    graph_results: list[dict]
     final_article: str
 
 class ReasonerState(TypedDict):
@@ -28,15 +27,16 @@ class ReasonerState(TypedDict):
     prompt_to_reasoner: str
 
     # --- Piano strutturato (prodotto dal planner)
-    tool_plan: list[str]           # ["tavily", "semantic_scholar"]
-    raw_results: list[dict]        # output grezzo dei tool
-    graph_results: list[dict]            # risultato della ricerca nel Knowledge Graph
-    approved_sources: Annotated[list[dict], operator.add]   # fonti approvate dal source_evaluator
-    research_material: str         # sintesi finale pulita → passa al BlogState
+    tool_plan: list[dict]      
+    raw_results: list[dict]
+    graph_results: list[dict]
+    approved_sources: Annotated[list[dict], operator.add]
+    not_approved_sources: Annotated[list[dict], operator.add]
+    research_material: str
     visited_urls: Annotated[list[str], operator.add]
 
     # --- Flag di controllo flusso
     sources_evaluated: bool
     is_complete: bool
     missing_info: str
-    iterations: int                # contatore cicli per evitare loop infiniti
+    iterations: int

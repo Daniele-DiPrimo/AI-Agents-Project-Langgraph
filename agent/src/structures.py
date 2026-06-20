@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Literal, List
 
 class ClassificationSchema(BaseModel):
-    intent: Literal["News", "Teoria", "Esercizio"] = Field(
+    intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario"] = Field(
         description="L'intento dell'utente"
     )
     subject: str = Field(
@@ -16,7 +16,7 @@ class ClassificationSchema(BaseModel):
     )
 
 class SingleJudgment(BaseModel):
-    source_url: str = Field(..., description="L'URL della fonte valutata") # Usiamo l'URL come ID
+    source: str = Field(..., description="Il riferimenti alla fonte valutata")
     source_reliability: float
     source_relevance: float
     reasoning: str
