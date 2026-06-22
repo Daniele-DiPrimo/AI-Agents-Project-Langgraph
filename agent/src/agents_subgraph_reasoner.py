@@ -9,11 +9,9 @@ from src.state import  ReasonerState
 from src.tools import blog_tools, ricerca_krag_unificata
 
 from src.prompts import (
-    get_krag_evaluator_prompt,
     get_planner_prompt,
     get_source_evaluator_prompt,
     get_completeness_evaluator_prompt,
-    get_web_evaluator_prompt
 )
 
 reasoner_completeness_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
