@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 import json
 
@@ -14,7 +13,6 @@ from src.state import BlogState
 
 from src.prompts import (
     get_classifier_prompt,
-    get_classifier_fallback,
     get_writer_exercise_prompt,
     get_writer_article_prompt,
     get_metadata_extractor_prompt
@@ -26,7 +24,8 @@ classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 embedder = genai.Client()
 
-# --- 3. NODO CLASSIFICATORE ---
+
+
 def classifier_node(state: BlogState):
     """Analizza il prompt originale e popola lo stato."""
     
@@ -44,6 +43,7 @@ def classifier_node(state: BlogState):
 
     # Se l'input è vuoto, fermiamo il modello prima che provi a fare JSON casuali
     if not user_prompt_safe:
+        print("⚠️ [Classifier] Nessun prompt utente fornito. Terminazione automatica.")
         return Command(goto=END)
 
     system_prompt = get_classifier_prompt()
@@ -68,6 +68,7 @@ def classifier_node(state: BlogState):
         return Command(goto=END)
 
 
+
 async def writer_node(state: BlogState) -> dict:
     """
     Genera l'articolo finale o gli esercizi in Markdown, includendo obbligatoriamente le citazioni e gli URL visitati.
@@ -81,29 +82,12 @@ async def writer_node(state: BlogState) -> dict:
     specific_topic     = state.get("specific_topic", "Unknown")
     prompt_to_reasoner = state.get("prompt_to_reasoner", "Scrivi in base al materiale fornito.")
     research_material  = state.get("research_material", "") # Materiale dal Web validato
-    graph_results      = state.get("graph_results", "")     # Materiale pesante dal Knowledge Graph
 
     # Fallback di sicurezza essenziale: blocca se non c'è assolutamente nessuna informazione
-    if not research_material and not graph_results:
+    if not research_material:
         raise ValueError(
-            "[Writer] Errore critico: sia 'research_material' che 'graph_results' sono vuoti. "
-            "Il sottografo di ricerca non ha estratto alcuna informazione utile."
+            "[Writer] Errore critico: Il sottografo di ricerca non ha estratto alcuna informazione utile."
         )
-
-    # 2. COSTRUZIONE DEL PAYLOAD
-    contesto_unificato = ""
-    
-    if graph_results:
-        contesto_unificato += "======================================================\n"
-        contesto_unificato += "CONTESTO E STRUTTURA DAL KNOWLEDGE GRAPH LOCALE (K-RAG):\n"
-        contesto_unificato += "======================================================\n"
-        contesto_unificato += f"{graph_results}\n\n"
-        
-    if research_material:
-        contesto_unificato += "======================================================\n"
-        contesto_unificato += "INFORMAZIONI DI INTEGRAZIONE DA FONTI ESTERNE / WEB:\n"
-        contesto_unificato += "======================================================\n"
-        contesto_unificato += f"{research_material}\n\n"
 
     # 3. Routing interno del System Prompt basato sull'intent (Aggiornato per supportare entrambe le fonti)
     if intent.lower() == "esercizio":
@@ -114,7 +98,7 @@ async def writer_node(state: BlogState) -> dict:
         sys_prompt = get_writer_article_prompt(intent, subject, specific_topic)
 
     # Impacchettiamo il mega-testo unificato nel messaggio per l'LLM
-    context_msg = HumanMessage(content=f"Materiale di riferimento totale per la redazione:\n{contesto_unificato}")
+    context_msg = HumanMessage(content=f"Materiale di riferimento totale per la redazione:\n{research_material}")
 
     # 4. Assemblaggio dei messaggi e invocazione
     llm_messages = [
@@ -139,6 +123,8 @@ async def writer_node(state: BlogState) -> dict:
     print("✅ [Writer] Stesura completata con successo basata su K-RAG totale.")
 
     return {"final_article": testo_generato}
+
+
 
 async def human_review_node(state: BlogState) -> Command:
     """
@@ -182,7 +168,6 @@ async def human_review_node(state: BlogState) -> Command:
             }
         )
 
-    # --- NUOVA OPZIONE 1: RIGENERA SOLO LA FORMA ---
     elif action == "rigenera_testo":
         print("🔄 [Human Review] Rigenerazione del testo richiesta (stesso materiale).")
         return Command(
@@ -196,7 +181,6 @@ async def human_review_node(state: BlogState) -> Command:
             }
         )
 
-    # --- NUOVA OPZIONE 2: RIFAI LA RICERCA ---
     elif action == "nuova_ricerca":
         feedback = human_response.get("feedback", "Trova nuove fonti e approfondisci l'argomento.")
         print("🔎 [Human Review] Nuova ricerca richiesta. Ritorno al Reasoner Subgraph...")
@@ -278,7 +262,8 @@ async def save_article_node(state: BlogState) -> dict:
     except Exception as e:
         print(f"⚠️ [Save Node] Impossibile estrarre o salvare nel grafo: {str(e)}")
         
-    return {} # Non c'è bisogno di aggiornare lo stato, il flusso termina qui
+    return {}
+
 
 
 
