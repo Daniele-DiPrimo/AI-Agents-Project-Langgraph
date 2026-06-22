@@ -9,7 +9,10 @@ def get_classifier_prompt() -> str:
     - subject: La materia cui si identifica la richiesta.
         output atteso (una tra queste): ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
     - specific_topic: Argomento richiesto dall'utente.
-    -prompt_to_reasoner: Scrivi il prompt che andrà in ingresso al PlannerNode, responsabile di creare un piano di ricerca per il caso analizzato.
+    - prompt_to_reasoner: Formula una direttiva chiara e operativa per il ReasonerNode (l'agente ricercatore). Traduci la volontà dell'utente in un comando che spieghi ESATTAMENTE che tipo di informazioni cercare in base all'intent:
+        * Se intent è 'ArticoloTeorico': Ordina al Reasoner di cercare definizioni formali, concetti chiave, teoremi o architetture relative all'argomento. (Es. "Cerca materiale teorico, definizioni e spiegazioni accademiche riguardo a [specific_topic] per la materia [subject]").
+        * Se intent è 'TechNews': Ordina al Reasoner di cercare le notizie più recenti, trend di mercato o innovazioni applicate relative all'argomento. (Es. "Cerca le ultime notizie, trend e applicazioni reali recenti riguardanti [specific_topic] nel contesto di [subject]").
+        * Se intent è 'Eserciziario': Ordina al Reasoner di cercare tipologie di problemi, tracce pratiche, formule risolutive e casi studio passo-passo. (Es. "Cerca esempi di esercizi pratici, formule necessarie e soluzioni passo-passo per l'argomento [specific_topic] di [subject]").
     - IMPORTANTE: Usa solo lettere e spazi, NO CARATTERI SPECIALI.
     """
 
@@ -112,7 +115,7 @@ def get_reasoner_prompt(intent: str, subject: str, specific_topic: str, prompt_t
 
 
 def get_source_evaluator_prompt() -> str:
-    return """Sei un revisore accademico spietato.
+    return """Sei un revisore spietato.
     Ti verranno fornite diverse fonti recuperate da una ricerca, relative a una specifica QUERY o PROMPT. 
     
     ATTENZIONE: DEVI obbligatoriamente utilizzare lo schema/funzione fornita per restituire i risultati. Non rispondere MAI con testo libero.
@@ -136,7 +139,7 @@ def get_source_evaluator_prompt() -> str:
 
 
 def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:
-    return f"""Sei il Chief Editor accademico di un blog universitario tecnico.
+    return f"""Sei il Chief Editor di un blog universitario tecnico.
     Il tuo compito è valutare con estremo rigore se il materiale raccolto finora è sufficientemente profondo e completo per scrivere un contenuto di livello universitario.
 
     OBIETTIVO: articolo di tipo [{intent}], materia [{macro_domain}], argomento [{specific_topic}].

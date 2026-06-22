@@ -127,7 +127,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
     # 2. Prepara il testo delle fonti per il prompt
     sources_text = f"QUERY: {prompt_to_reasoner}\n\n"
     for r in results:
-        source = r.get("source", "Fonte Mancante")
+        source = r.get("source", r.get("url", "Fonte Mancante"))
         content = r.get("content", "Contenuto Mancante")
         sources_text += f"--- FONTE ---\nFonte: {source}\nContent: {content}\n\n"
 
@@ -141,7 +141,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
     # 4. Elaborazione dei giudizi
     approved_sources = []
     not_approved_sources = []
-    results_by_source = {r.get("source"): r for r in results} 
+    results_by_source = {r.get("source", r.get("url", "Fonte Mancante")): r for r in results} 
 
     THRESHOLD_RELEVANCE = 0.70
     THRESHOLD_RELIABILITY = 0.70
@@ -155,7 +155,7 @@ def source_evaluator_node(state: ReasonerState) -> dict:
             "content": results_by_source.get(j.source, {}).get("content", ""),
             "source": j.source
         }
-        
+
         # 5. Logica di approvazione condizionale
         if iterations == 0: #Ricerca da K-RAG
             is_approved = j.source_relevance >= THRESHOLD_RELEVANCE
@@ -200,7 +200,6 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
             return {
                 "is_complete": False,
                 "iterations": iterations + 1,
-                "missing_info": ""
             }
     
     sources_summary = "\n".join([

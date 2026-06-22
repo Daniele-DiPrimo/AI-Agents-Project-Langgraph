@@ -209,7 +209,7 @@ async def save_article_node(state: BlogState) -> dict:
     
     final_article = state.get("final_article", "")
     intent = state.get("intent", "Unknown")
-    macro_domain = state.get("macro_domain", "Unknown")
+    subject = state.get("subject", "Unknown")
     specific_topic = state.get("specific_topic", "Unknown")
     
     estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
@@ -224,16 +224,15 @@ async def save_article_node(state: BlogState) -> dict:
         risultato_estrazione = await estrattore_metadati.ainvoke(messaggi_estrazione)
         
         concetti_collegati = risultato_estrazione.concetti_trovati
-        documenti_usati = risultato_estrazione.fonti_documentali
-        link_trovati = risultato_estrazione.link_esterni
+        fonti = risultato_estrazione.fonti
         relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
         claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti]
         
-        prefisso = "Esercizi" if intent.lower() == "esercizio" else "Blog"
+        prefisso = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews"
         titolo_nodo = f"[{prefisso}] {specific_topic}"
 
         print("🧠 [Save Node] Calcolo dell'embedding per l'articolo completo...")
-        testo_da_embeddare = f"Titolo: {titolo_nodo}\n\nContenuto: {final_article}"
+        testo_da_embeddare = f"Titolo: {titolo_nodo}\n\n"
         
         risultato_embedding = embedder.models.embed_content(
             model="gemini-embedding-2",
@@ -250,10 +249,9 @@ async def save_article_node(state: BlogState) -> dict:
                 "contenuto": final_article,
                 "concetti_spiegati": concetti_collegati,
                 "relazioni_concetti": relazioni_estratte,
-                "materia": macro_domain,
+                "materia": subject,
                 "vettore": vettore_articolo,
-                "fonti_documentali": documenti_usati,
-                "link_esterni": link_trovati,
+                "fonti": fonti,
                 "claims_articolo": claims_estratte 
             }
         )

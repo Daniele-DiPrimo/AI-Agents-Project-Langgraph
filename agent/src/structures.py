@@ -53,6 +53,5 @@ class ClaimArticolo(BaseModel):
 class EstrazioneMetadatiArticolo(BaseModel):
     concetti_trovati: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
     relazioni_concetti: List[RelazioneArticolo] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
-    fonti_documentali: List[str] = Field(description="Lista esatta dei nomi dei file PDF citati nel testo (es. 'Algoritmi_Cap3.pdf').")
-    link_esterni: List[str] = Field(description="Lista di tutti gli URL o link web menzionati nel testo. Lista vuota se non ce ne sono.")
+    fonti: List[str] = Field(description="Lista di tutte le fonti utilizzate per scrivere l'articolo")
     claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") # <-- NUOVO
