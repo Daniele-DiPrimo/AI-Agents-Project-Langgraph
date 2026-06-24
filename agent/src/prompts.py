@@ -138,11 +138,11 @@ def get_source_evaluator_prompt() -> str:
     """
 
 
-def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_topic: str) -> str:
+def get_completeness_evaluator_prompt(intent: str, subject: str, specific_topic: str) -> str:
     return f"""Sei il Chief Editor di un blog universitario tecnico.
     Il tuo compito è valutare con estremo rigore se il materiale raccolto finora è sufficientemente profondo e completo per scrivere un contenuto di livello universitario.
 
-    OBIETTIVO: articolo di tipo [{intent}], materia [{macro_domain}], argomento [{specific_topic}].
+    OBIETTIVO: articolo di tipo [{intent}], materia [{subject}], argomento [{specific_topic}].
 
     CRITERI DI SUFFICIENZA (Devono essere tutti soddisfatti):
     1. Profondità tecnica: Ci sono dettagli tecnici, architettonici o matematici reali? O sono presenti solo definizioni da dizionario?
@@ -155,3 +155,39 @@ def get_completeness_evaluator_prompt(intent: str, macro_domain: str, specific_t
     REGOLE OPERATIVE:
     - NON fare domande all'utente.
     - Se l'informazione è insufficiente, metti "is_complete": false e in 'missing_info' scrivi 3-4 parole chiave mirate in inglese per guidare la prossima ricerca del Planner verso i concetti tecnici mancanti."""
+
+def get_information_gathering_prompt(intent: str, subject: str, specific_topic: str, neo4j_context: str) -> str:
+    """
+    Genera il prompt per l'LLM incaricato di fare Query Expansion verso ChromaDB.
+    """
+    prompt = f"""Sei un esperto ricercatore accademico e analista dati.
+    Il tuo compito è formulare query di ricerca perfette per estrarre materiale didattico da un database vettoriale (Vector DB) per un k-rag universitario.
+
+    DEVI CERCARE MATERIALE PER SCRIVERE QUESTO:
+    - Tipo di contenuto: [{intent}]
+    - Materia: [{subject}]
+    - Argomento Specifico: [{specific_topic}]
+
+    === MEMORIA STORICA DEL BLOG (DA NEO4J) ===
+    {neo4j_context}
+    ==========================================
+
+    OBIETTIVO:
+    Devi generare ESATTAMENTE 3 query di ricerca distinte da lanciare nel database vettoriale per recuperare il materiale migliore.
+
+    REGOLE DI GENERAZIONE DELLE QUERY:
+    1. SE C'È UNO STORICO (Trovato articolo):
+    - USA le informazioni presenti nelle "Affermazioni Chiave" per potenziare la ricerca.
+    - USA i "Concetti Correlati" per espandere la ricerca verso sottomaterie o dettagli tecnici che non abbiamo ancora esplorato.
+    2. SE NON C'È UNO STORICO (Nessun articolo trovato):
+    - Formula le query che coprano le definizioni di base, le applicazioni avanzate e gli aspetti matematici/pratici di [{specific_topic}].
+    3. ADATTAMENTO ALL'INTENT:
+    - Se l'intent è 'ArticoloTeorico', cerca definizioni, teoremi e concetti.
+    - Se l'intent è 'Eserciziario', cerca esplicitamente formule risolutive, problemi passo-passo ed esempi numerici.
+    - Se l'intent è 'TechNews', cerca applicazioni reali, trend di mercato e innovazioni recenti.
+
+
+
+    Rispondi SOLO seguendo lo schema JSON richiesto, senza testo aggiuntivo.
+    """
+    return prompt

@@ -1,3 +1,5 @@
+import time
+
 from dotenv import load_dotenv
 import json
 
@@ -8,21 +10,26 @@ from langgraph.types import interrupt, Command
 from langgraph.graph import END
 from src.mcp_client import call_mcp_tool
 
-from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo
+from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo, ChromaQuerySchema
 from src.state import BlogState
 
 from src.prompts import (
     get_classifier_prompt,
     get_writer_exercise_prompt,
     get_writer_article_prompt,
-    get_metadata_extractor_prompt
+    get_metadata_extractor_prompt,
+    get_information_gathering_prompt
 )
+
+from src.neo4j_client import neo4j_search
+from src.chroma_client import rag_search
 
 load_dotenv()
 
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
-embedder = genai.Client()
+google_client = genai.Client()
+
 
 
 
@@ -67,6 +74,114 @@ def classifier_node(state: BlogState):
         # Se Groq presenta errori (es. rate limit o failed generation)
         return Command(goto=END)
 
+
+import time
+
+def information_gathering_node(state: BlogState): 
+    """
+    Nodo responsabile dell'estrazione di informazioni dal knowledge graph e k-RAG.
+    """
+    intent = state.get("intent", "Unknown")
+    subject = state.get("subject", "")
+    specific_topic = state.get("specific_topic", "")
+
+    prefix = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews" 
+    current_title = f"[{prefix}] {specific_topic}"
+
+    max_retries = 3
+    
+    # =========================================================
+    # 1. CICLO DI RETRY PER L'EMBEDDING
+    # =========================================================
+    embedding_result = None
+    
+    for attempt in range(max_retries):
+        try: 
+            embedding_result = google_client.models.embed_content(
+                model = "gemini-embedding-2", # Nome modello corretto
+                contents = current_title
+            )
+            print("\n✅ EMBEDDING GENERATO CON SUCCESSO \n")
+            break # Successo: usciamo dal ciclo!
+            
+        except Exception as e_doc:
+            error = str(e_doc)
+            print(f"⚠️ Errore Embedding ({attempt + 1}/{max_retries}): {error}")
+            
+            if "429" in error or "RESOURCE_EXHAUSTED" in error:
+                print("   ⏳ Quota raggiunta (429). Pausa di 30 secondi e riprovo...")
+                time.sleep(30)
+            elif "503" in error:
+                print("   ⚠️ Server Google intasati (503). Pausa di 10 secondi e riprovo...")
+                time.sleep(10) 
+            else:
+                break # Errore diverso (es. chiave API errata), inutile riprovare
+
+    # Sicurezza: se tutti i tentativi sono falliti
+    if not embedding_result:
+        print("🔥 Fallimento critico: impossibile generare l'embedding.")
+        return {"neo4j_context": "Nessuno storico.", "graph_results": []}
+
+    # =========================================================
+    # 2. ESTRAZIONE DA NEO4J
+    # =========================================================
+    embedded_title = embedding_result.embeddings[0].values
+    neo4j_result = neo4j_search(embedded_title, 3)
+    
+    # Assicuriamoci di formattare il risultato come stringa per il prompt
+
+    # =========================================================
+    # 3. CICLO DI RETRY PER L'LLM (GENERAZIONE QUERY)
+    # =========================================================
+    response = None
+    
+    for attempt in range(max_retries):
+        try:
+            response = google_client.models.generate_content(
+                model = "gemini-2.5-flash", 
+                contents = get_information_gathering_prompt(intent, subject, specific_topic, neo4j_result),
+                config = {
+                    "response_mime_type": "application/json",
+                    "response_schema" : ChromaQuerySchema,
+                    "temperature" : 0.2
+                }
+            )
+            break # Successo: usciamo dal ciclo!
+            
+        except Exception as e_doc:
+            error = str(e_doc)
+            print(f"⚠️ Errore LLM ({attempt + 1}/{max_retries}): {error}")
+            
+            if "429" in error or "RESOURCE_EXHAUSTED" in error:
+                print("   ⏳ Quota raggiunta (429). Pausa di 30 secondi e riprovo...")
+                time.sleep(30)
+            elif "503" in error:
+                print("   ⚠️ Server Google intasati (503). Pausa di 10 secondi e riprovo...")
+                time.sleep(20) 
+            else:
+                break # Errore diverso, inutile riprovare
+
+    # Sicurezza: se tutti i tentativi sono falliti
+    if not response:
+        print("🔥 Fallimento critico: impossibile generare le query.")
+        return {
+            "neo4j_context": neo4j_result,
+            "graph_results": []
+        }
+
+    # =========================================================
+    # 4. ESECUZIONE QUERY SU CHROMA E AGGIORNAMENTO STATO
+    # =========================================================
+    queries = response.parsed.queries
+    print(f"\n🎯 QUERY GENERATE: {queries}\n" )
+
+    chroma_result = rag_search(queries=queries, subject=subject)
+    print(f"\n📚 RISULTATI CHROMA: {chroma_result}\n")
+
+    return {
+        "neo4j_context" : neo4j_result,
+        "graph_results" : chroma_result
+    }
 
 
 async def writer_node(state: BlogState) -> dict:
@@ -228,13 +343,13 @@ async def save_article_node(state: BlogState) -> dict:
         relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
         claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti]
         
-        prefisso = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews"
+        prefisso = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews" 
         titolo_nodo = f"[{prefisso}] {specific_topic}"
 
         print("🧠 [Save Node] Calcolo dell'embedding per l'articolo completo...")
         testo_da_embeddare = f"Titolo: {titolo_nodo}\n\n"
         
-        risultato_embedding = embedder.models.embed_content(
+        risultato_embedding = google_client.models.embed_content(
             model="gemini-embedding-2",
             contents=testo_da_embeddare
         )
@@ -261,9 +376,6 @@ async def save_article_node(state: BlogState) -> dict:
         print(f"⚠️ [Save Node] Impossibile estrarre o salvare nel grafo: {str(e)}")
         
     return {}
-
-
-
 
 
 #utils

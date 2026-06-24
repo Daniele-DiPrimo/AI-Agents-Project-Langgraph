@@ -8,7 +8,6 @@ from langchain_tavily import TavilySearch
 from src.structures import SearchSchema
 from src.mcp_client import call_mcp_tool
 
-# Carica il file .env per la chiave API
 load_dotenv()
 
 embedder = genai.Client()
@@ -23,6 +22,8 @@ tavily = TavilySearch(
 # Tool Python Code Executor
 # Permette all'LLM di scrivere ed eseguire codice per risolvere esercizi tecnici
 python_tool = PythonREPLTool()
+
+
 
 @tool(args_schema=SearchSchema)
 def search_tool(giustificazione:str, query: str) -> dict:
@@ -147,6 +148,7 @@ async def ricerca_krag_unificata(query: str) -> dict:
     except Exception as e:
         print(f"❌ [Errore Tool K-RAG]: {str(e)}")
         return {}
+    
 
 
 blog_tools = [search_semantic_scholar, search_tool]

@@ -54,4 +54,21 @@ class EstrazioneMetadatiArticolo(BaseModel):
     concetti_trovati: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
     relazioni_concetti: List[RelazioneArticolo] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
     fonti: List[str] = Field(description="Lista di tutte le fonti utilizzate per scrivere l'articolo")
-    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") # <-- NUOVO
+    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") 
+
+class QueryExpansionSchema(BaseModel):
+
+    is_context_relevant: bool = Field(
+        description="True se il contesto storico di Neo4j è effettivamente correlato al nuovo argomento richiesto. False se è un falso positivo o parla di tutt'altro."
+    )
+    reasoning: str = Field(
+        description="Spiega in una riga perché il contesto è rilevante o meno."
+    )
+    queries: list[str] = Field(
+        description="Lista di 3 query di ricerca. Se is_context_relevant è False, ignora il contesto storico e formula query partendo da zero sull'argomento richiesto."
+    )
+
+class ChromaQuerySchema(BaseModel):
+    queries: list[str] = Field(
+        description="Esattamente 3 query di ricerca ottimizzate per Chroma DB"
+    )
