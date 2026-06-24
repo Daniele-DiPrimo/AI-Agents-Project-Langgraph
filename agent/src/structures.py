@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal, List
+from typing import Literal, List, Optional
 
 class ClassificationSchema(BaseModel):
     intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario", "Suggerimento"] = Field(
@@ -20,12 +20,18 @@ class PlannerSchema(BaseModel):
 
 class SingleJudgment(BaseModel):
     source: str = Field(..., description="Il riferimenti alla fonte valutata")
+    id: Optional[str] = Field(
+        default=None, # 🔴 Questo dice a Pydantic di non arrabbiarsi se manca
+        description="L'ID esatto della risorsa (solo per i chunk interni). Se la fonte non mostra esplicitamente un ID, non compilare questo campo."
+    )
     source_reliability: float
     source_relevance: float
     reasoning: str
 
 class SourceEvaluationSchema(BaseModel):
-    judgments: List[SingleJudgment]
+    judgments: List[SingleJudgment] = Field(
+        description= "Lista di tutte le valutazioni, una per ogni fonte ricevuta."
+    )
 
 class CompletenessEvaluationSchema(BaseModel): 
     is_complete: bool = Field(

@@ -77,12 +77,6 @@ def classifier_node(state: BlogState):
         # Se Groq presenta errori (es. rate limit o failed generation)
         return Command(goto=END)
 
-async def planner_node(state: BlogState):
-    """
-    Analizza lo stato e la memoria storica del grafo tramite il tool di gap analysis,
-    quindi interroga l'LLM per generare una lista strutturata di suggerimenti editoriali.
-    """
-    print("🔮 [Planner] Avvio analisi dei content gap per pianificazione...")
 
 import time
 
@@ -175,7 +169,7 @@ def information_gathering_node(state: BlogState):
         print("🔥 Fallimento critico: impossibile generare le query.")
         return {
             "neo4j_context": neo4j_result,
-            "graph_results": []
+            "graph_results": {}
         }
 
     # =========================================================
@@ -209,7 +203,7 @@ async def planner_node(state: BlogState):
         contesto_grafo = "Nessun dato sul grafo disponibile a causa di un errore tecnico."
 
     # 3. Configurazione dell'LLM strutturato
-    planner_llm_structured = planner_llm.with_structured_output(PlannerSchema)
+    planner_llm_structured = planner_llm.with_structured_output(PlannerSchema, method="json_mode")
     
     system_prompt = get_planner_prompt()
     
@@ -222,7 +216,7 @@ async def planner_node(state: BlogState):
 
     user_content = f""" Richiesta originale dell'utente: {prompt_utente}
                         STATO ATTUALE DEL KNOWLEDGE GRAPH (Articoli già scritti e concetti): {contesto_grafo}
-                        Genera la lista di suggerimenti in formato strutturato basandoti sui dati reali del grafo sopra riportati."""
+                        """
 
     try:
         # 4. Invocazione del modello
@@ -273,12 +267,13 @@ def hitl_planner_node(state: BlogState):
     if action == "approva":
         print("✅ [Human Review] Articolo approvato. Passo il controllo alla stesura...")
         return Command(
-            goto="reasoner_subgraph",
+            goto="information_gathering",
             update={
                 "intent": current_suggestion.intent, 
                 "subject": current_suggestion.subject, 
                 "specific_topic": current_suggestion.specific_topic,
-                "prompt_to_reasoner": current_suggestion.prompt_to_reasoner
+                "prompt_to_reasoner": current_suggestion.prompt_to_reasoner,
+                "iterations" : 0
             }
         )
 

@@ -35,7 +35,22 @@ def get_planner_prompt() -> str:
     2. subject: La materia o dominio generale ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
     3. specific_topic: Argomento suggerito.
     4. prompt_to_reasoner: Il focus del nuovo articolo suggerito.
+    Genera la lista di suggerimenti in formato strutturato basandoti sui dati reali del grafo sopra riportati.
+    REGOLA FONDAMENTALE (CRITICA): 
+    NON generare testo libero. Devi OBBLIGATORIAMENTE restituire la tua risposta in puro formato JSON.
+    ATTENZIONE ALLA SINTASSI: Il tuo JSON DEVE essere un singolo oggetto (dizionario) contenente la chiave radice "suggestions". 
+    NON restituire un array direttamente. Usa ESATTAMENTE questa struttura:
 
+    {{
+        "suggestions": [
+            {{
+                "intent": "...",
+                "subject": "...",
+                "specific_topic": "...",
+                "prompt_to_reasoner": "..."
+            }}
+        ]
+    }}
     Sii analitico: non proporre duplicati di articoli già esistenti, ma colma i vuoti nel grafo della conoscenza!"""
 
 

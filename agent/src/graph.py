@@ -11,7 +11,7 @@ def route_after_classifier(state: BlogState):
     if intent == "Suggerimento":
         return "planner"
     elif intent == "ArticoloTeorico" or intent == "TechNews" or intent == "Eserciziario":
-        return "reasoner_subgraph"
+        return "information_gathering"
     else:
         # Fallback nel caso in cui l'intent non sia riconosciuto
         print("Error: Classifier didn't recognize the intent.")
@@ -42,7 +42,8 @@ builder.add_conditional_edges(
 )
 
 builder.add_edge("planner", "hitl_planner")
-#builder.add_edge("hitl_planner", "reasoner_subgraph") #hitl_planner decide dinamicamente tramite Command() se andare a "hitl_planner" o "reasoner_subgraph"
+#builder.add_edge("hitl_planner", "information_gathering") 
+builder.add_edge("information_gathering", "reasoner_subgraph")
 builder.add_edge("reasoner_subgraph", "writer")
 builder.add_edge("writer", "human_review")
 builder.add_edge("human_review", "save_article") # human_review_node decide dinamicamente tramite Command() se andare a "writer", "save_article" o END

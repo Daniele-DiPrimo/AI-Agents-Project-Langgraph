@@ -17,6 +17,7 @@ class BlogState(TypedDict):
     current_suggestion_index: int
     research_material: str
     final_article: str
+    graph_results: dict
 
 class ReasonerState(TypedDict):
     """Stato del reasoner subgraph"""
@@ -30,8 +31,8 @@ class ReasonerState(TypedDict):
 
     # --- Piano strutturato (prodotto dal planner)
     tool_plan: list[dict]      
-    raw_results: list[dict]
-    graph_results: list[dict]
+    raw_results: dict
+    graph_results: dict
     approved_sources: Annotated[list[dict], operator.add]
     not_approved_sources: Annotated[list[dict], operator.add]
     research_material: str

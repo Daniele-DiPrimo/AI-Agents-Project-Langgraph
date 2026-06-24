@@ -17,11 +17,11 @@ google_ef = embedding_functions.GoogleGenaiEmbeddingFunction(
 
 collection = chroma_client.get_or_create_collection(name="UniAgent_RAG", embedding_function=google_ef)
 
-def rag_search(queries: list[str], subject: str, top_k: int=3) -> list[dict]:
+def rag_search(queries: list[str], subject: str, top_k: int=3) -> dict:
     """
     Esegue query sequenziali su ChromaDB, aggirando il bug di batching 
     dell'Embedding di Google. Deduplica i chunk tramite ID e restituisce
-    una lista di dizionari pulita.
+    un dizionario formattato per il source_evaluator.
     """
     chunk_unici = {}
     
@@ -33,17 +33,20 @@ def rag_search(queries: list[str], subject: str, top_k: int=3) -> list[dict]:
         subject.capitalize()      # Solo la prima: "Teoria dei segnali"
     ]
 
-    # Controllo di sicurezza rapido
+    # Controllo di sicurezza rapido: se non ci sono query, torniamo la struttura vuota
     if not queries:
-        return []
+        return {
+            "query": "",
+            "results": []
+        }
     
-    # Cicliamo le query una ad una: 1 stringa -> 1 vettore -> 1 risultato. Infallibile.
+    # Cicliamo le query una ad una
     for q in queries:
         try:
             rag_results = collection.query(
-                query_texts=[q], # Avvolgiamo la singola stringa in una lista
+                query_texts=[q], 
                 n_results=top_k,
-                where={"subject": {"$in": subject_variations}} # Barriera anti-allucinazioni attivata
+                where={"subject": {"$in": subject_variations}} 
             )
 
             # Controllo di sicurezza per la singola estrazione
@@ -61,14 +64,21 @@ def rag_search(queries: list[str], subject: str, top_k: int=3) -> list[dict]:
                 # Zip e Deduplicazione Globale
                 for doc_id, doc_text, meta in zip(ids, documenti, metadati):
                     if doc_id not in chunk_unici:
+                        # MODIFICATO QUI: Formattiamo direttamente con le chiavi richieste
                         chunk_unici[doc_id] = {
-                            "chunk_id": doc_id,
-                            "testo": doc_text,
-                            "fonte": meta.get("source", "Sconosciuta")
+                            "source": meta.get("source", "Sconosciuta"),
+                            "content": doc_text,
+                            "id" : doc_id
                         }
                         
         except Exception as e:
             print(f"🔥 Errore ChromaDB sulla query '{q}': {e}")
             
-    return list(chunk_unici.values())
+    # Formattiamo il return finale esattamente come richiesto
+    return {
+        # Uniamo le query con un separatore per mantenere tutto il contesto
+        "query": " | ".join(queries), 
+        # Estraiamo solo i valori (la lista di dizionari) dal nostro tracker dei duplicati
+        "results": list(chunk_unici.values())
+    }
 

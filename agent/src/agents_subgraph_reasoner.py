@@ -5,7 +5,7 @@ from src.structures import CompletenessEvaluationSchema, SourceEvaluationSchema
 
 from src.state import  ReasonerState
 
-from src.tools import blog_tools, ricerca_krag_unificata
+from src.tools import blog_tools
 
 from src.prompts import (
     get_reasoner_prompt,
@@ -32,19 +32,6 @@ def reasoner_node(state: ReasonerState) -> dict:
 
     missing_info = state.get("missing_info", "Questa è la prima ricerca. Inizia esplorando l'argomento.")
 
-    tool_disponibili = []
-
-    tool_plan = state.get("tool_plan", [])
-    is_krag_consulted = bool(tool_plan)
-
-    if not is_krag_consulted:
-        print("🔍 [Reasoner] Primo avvio: Il K-RAG deve essere consultato.")
-        tool_disponibili.append(ricerca_krag_unificata)
-        
-    else:
-        print("⏭️ [Reasoner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
-        tool_disponibili = blog_tools
-
     # Genera il prompt dinamicamente
     sys_prompt = get_reasoner_prompt(
         intent, subject, specific_topic, 
@@ -52,7 +39,7 @@ def reasoner_node(state: ReasonerState) -> dict:
     )
 
     reasoner_llm_w_tools = reasoner_completeness_llm.bind_tools(
-        tool_disponibili,
+        blog_tools,
         tool_choice="any",
         parallel_tool_calls=False
     )
@@ -64,17 +51,15 @@ def reasoner_node(state: ReasonerState) -> dict:
     return {"tool_plan": answer.tool_calls}
 
 
-
 async def tool_executor_node(state: ReasonerState) -> dict:
     """Esegue le chiamate generate da bind_tools e salva in raw_results."""
     print("🛠️ [Tool Executor] Esecuzione ricerche...")
     
     tool_plan = state.get("tool_plan", [])
     raw_results = []
-    graph_results = state.get("graph_results", "")
     
     # Creiamo un dizionario veloce per richiamare i tuoi tool reali tramite il loro nome
-    tools_by_name = {tool.name: tool for tool in (blog_tools + [ricerca_krag_unificata])}
+    tools_by_name = {tool.name: tool for tool in (blog_tools)}
 
     tool_call = tool_plan[-1]
     
@@ -85,11 +70,7 @@ async def tool_executor_node(state: ReasonerState) -> dict:
         # Eseguiamo il tool passando gli argomenti scompattati
         result = await tools_by_name[tool_name].ainvoke(tool_args)
 
-        # Salviamo il risultato nei campi appropriati.
-        if(tool_name == "ricerca_krag_unificata"):
-            graph_results = result
-        else:
-            raw_results = result
+        raw_results = result
             
         print(f"   -> Tool '{tool_name}' eseguito con successo.")
     except Exception as e:
@@ -97,7 +78,6 @@ async def tool_executor_node(state: ReasonerState) -> dict:
 
     return {
         "raw_results": raw_results,
-        "graph_results": graph_results,
         "tool_used": tool_name,
         "tool_args": tool_args
     }
@@ -115,58 +95,71 @@ def source_evaluator_node(state: ReasonerState) -> dict:
     graph_results = state.get("graph_results", [])
     iterations = state.get("iterations", 0)
 
-    # 1. Determina quale lista di fonti usare in base all'iterazione
-    target_results = graph_results if iterations == 0 else raw_results
-    results = target_results.get("results", [])
-
-    # Uscita anticipata se non ci sono fonti da valutare
-    if not results:
-        return {"approved_sources": [], "not_approved_sources": [], "sources_evaluated": False}
-
-    # 2. Prepara il testo delle fonti per il prompt
-    sources_text = f"QUERY: {prompt_to_reasoner}\n\n"
-    for r in results:
-        source = r.get("source", r.get("url", "Fonte Mancante"))
-        content = r.get("content", "Contenuto Mancante")
-        sources_text += f"--- FONTE ---\nFonte: {source}\nContent: {content}\n\n"
-
-    # 3. Chiamata all'LLM (unificata)
-    llm_input = [
-        SystemMessage(content=get_source_evaluator_prompt()),
-        HumanMessage(content=f"Valuta le seguenti fonti:\n{sources_text}")
-    ]
-    judgment_batch = structured_source_evaluator_llm.invoke(llm_input)
-
-    # 4. Elaborazione dei giudizi
+    # 1. Inizializziamo le liste GLOBALI fuori dal ciclo per non sovrascriverle
     approved_sources = []
     not_approved_sources = []
-    results_by_source = {r.get("source", r.get("url", "Fonte Mancante")): r for r in results} 
-
+    
     THRESHOLD_RELEVANCE = 0.70
     THRESHOLD_RELIABILITY = 0.70
 
-    for j in judgment_batch.judgments:
-        source_data = {
-            "source_reliability": j.source_reliability,
-            "source_relevance": j.source_relevance,
-            "overall_score": (j.source_reliability + j.source_relevance) / 2.0, 
-            "reasoning": j.reasoning, 
-            "content": results_by_source.get(j.source, {}).get("content", ""),
-            "source": j.source
-        }
+    # CORREZIONE 1: Usiamo le parentesi quadre per creare una Lista, non un Set
+    target_results = [graph_results, raw_results] if iterations == 0 else [raw_results]
 
-        # 5. Logica di approvazione condizionale
-        if iterations == 0: #Ricerca da K-RAG
-            is_approved = j.source_relevance >= THRESHOLD_RELEVANCE
-        else:
-            is_approved = (j.source_reliability >= THRESHOLD_RELIABILITY and 
-                           j.source_relevance >= THRESHOLD_RELEVANCE)
+    for r in target_results:
+        # Usiamo .get() per sicurezza, nel caso la chiave manchi
+        results = r.get("results", []) 
+        
+        # CORREZIONE 2: Uscita anticipata per il SINGOLO giro, non per tutta la funzione
+        if not results:
+            continue
 
-        if is_approved:
-            approved_sources.append(source_data)
-        else:
-            not_approved_sources.append(source_data)
+        # 2. Prepara il testo delle fonti per il prompt
+        sources_text = f"QUERY: {prompt_to_reasoner}\n\n"
+        for item in results:
+            source = item.get("source", item.get("url", "Fonte Mancante"))
+            content = item.get("content", "Contenuto Mancante")
+            if r is graph_results:
+                id = item.get("id")
+                sources_text += (f"--- FONTE ---\nFonte: {source}\n ID {id} \n Content: {content}\n\n")
+            else: 
+                sources_text += (f"--- FONTE ---\nFonte: {source}\n  \n Content: {content}\n\n")
 
+        # 3. Chiamata all'LLM
+        llm_input = [
+            SystemMessage(content=get_source_evaluator_prompt()),
+            HumanMessage(content=f"Valuta le seguenti fonti:\n{sources_text}")
+        ]
+        judgment_batch = structured_source_evaluator_llm.invoke(llm_input)
+
+        # 4. Elaborazione dei giudizi
+        results_by_source = {item.get("id", item.get("source")): item for item in results} 
+
+        for j in judgment_batch.judgments:
+            
+            source_data = {
+                "source_reliability": j.source_reliability,
+                "source_relevance": j.source_relevance,
+                "overall_score": (j.source_reliability + j.source_relevance) / 2.0, 
+                "reasoning": j.reasoning, 
+                "content": results_by_source.get(j.id, results_by_source.get(j.source)).get("content", ""),
+                "source": j.source
+            }
+
+            # 5. Logica di approvazione condizionale
+            # Usiamo 'is' invece di '==' per verificare l'esatta identità dell'oggetto in memoria
+            if r is graph_results: # Ricerca da K-RAG (Interna)
+                is_approved = j.source_relevance >= THRESHOLD_RELEVANCE
+            else: # Ricerca Web (Esterna)
+                is_approved = (j.source_reliability >= THRESHOLD_RELIABILITY and 
+                               j.source_relevance >= THRESHOLD_RELEVANCE)
+
+            # Aggiungiamo i risultati alle liste globali
+            if is_approved:
+                approved_sources.append(source_data)
+            else:
+                not_approved_sources.append(source_data)
+
+    # 6. Ritorno finale solo quando il ciclo ha processato tutte le fonti necessarie
     return {
         "approved_sources": approved_sources,
         "not_approved_sources": not_approved_sources,
