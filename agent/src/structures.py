@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Literal, List
 
 class ClassificationSchema(BaseModel):
-    intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario"] = Field(
+    intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario", "Suggerimento"] = Field(
         description="L'intento dell'utente"
     )
     subject: str = Field(
@@ -14,6 +14,9 @@ class ClassificationSchema(BaseModel):
     prompt_to_reasoner: str = Field(
         description="Le istruzioni dettagliate e ripulite da passare al nodo reasoner"
     )
+
+class PlannerSchema(BaseModel):
+    suggestions: List[ClassificationSchema]
 
 class SingleJudgment(BaseModel):
     source: str = Field(..., description="Il riferimenti alla fonte valutata")

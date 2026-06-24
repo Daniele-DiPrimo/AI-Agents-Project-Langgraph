@@ -8,13 +8,15 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import interrupt, Command
 from langgraph.graph import END
+from src.tools import analisi_gap_contenuti
 from src.mcp_client import call_mcp_tool
 
-from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo, ChromaQuerySchema
+from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo, PlannerSchema, ChromaQuerySchema
 from src.state import BlogState
 
 from src.prompts import (
     get_classifier_prompt,
+    get_planner_prompt,
     get_writer_exercise_prompt,
     get_writer_article_prompt,
     get_metadata_extractor_prompt,
@@ -27,6 +29,7 @@ from src.chroma_client import rag_search
 load_dotenv()
 
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
+planner_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 google_client = genai.Client()
 
@@ -74,6 +77,12 @@ def classifier_node(state: BlogState):
         # Se Groq presenta errori (es. rate limit o failed generation)
         return Command(goto=END)
 
+async def planner_node(state: BlogState):
+    """
+    Analizza lo stato e la memoria storica del grafo tramite il tool di gap analysis,
+    quindi interroga l'LLM per generare una lista strutturata di suggerimenti editoriali.
+    """
+    print("🔮 [Planner] Avvio analisi dei content gap per pianificazione...")
 
 import time
 
@@ -183,6 +192,105 @@ def information_gathering_node(state: BlogState):
         "graph_results" : chroma_result
     }
 
+    #da qua in poi matteo, manca un def
+async def planner_node(state: BlogState):
+# 1. Recuperiamo l'eventuale materia (subject) corrente dallo stato per filtrare il grafo
+# Se non c'è, passiamo una stringa vuota per analizzare tutto l'ecosistema
+    materia_corrente = state.get("subject", "")
+    
+    # 2. Chiamata asincrona al tool MCP esposto in LangChain
+    try:
+        report_tool = await analisi_gap_contenuti.ainvoke({"materia_specifica": materia_corrente})
+        print(f"REPORT TOOL: {report_tool}")
+        # Estraiamo il contenuto testuale del report generato dal server MCP
+        contesto_grafo = report_tool["results"][0]["content"]
+    except Exception as e:
+        print(f"⚠️ [Planner] Errore durante il recupero del report dal grafo: {e}")
+        contesto_grafo = "Nessun dato sul grafo disponibile a causa di un errore tecnico."
+
+    # 3. Configurazione dell'LLM strutturato
+    planner_llm_structured = planner_llm.with_structured_output(PlannerSchema)
+    
+    system_prompt = get_planner_prompt()
+    
+    # Costruiamo il messaggio per l'interazione umana includendo l'input dell'utente e lo stato del grafo
+    prompt_utente = ""
+    if "messages" in state and state["messages"]:
+        prompt_utente = state["messages"][-1].content
+    elif "original_prompt" in state:
+        prompt_utente = state["original_prompt"]
+
+    user_content = f""" Richiesta originale dell'utente: {prompt_utente}
+                        STATO ATTUALE DEL KNOWLEDGE GRAPH (Articoli già scritti e concetti): {contesto_grafo}
+                        Genera la lista di suggerimenti in formato strutturato basandoti sui dati reali del grafo sopra riportati."""
+
+    try:
+        # 4. Invocazione del modello
+        risultato = await planner_llm_structured.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content)
+        ])
+        
+        # 5. Restituzione dello stato aggiornato. 
+        # Di solito in LangGraph si aggiorna una lista di suggerimenti o si passa il controllo al nodo successivo.
+        # Ritorniamo il dizionario che aggiornerà le chiavi dello stato.
+        return {
+            "suggestions": risultato.suggestions
+        }
+
+    except Exception as e:
+        print(f"❌ [Planner] Errore durante la generazione dei suggerimenti con l'LLM: {e}")
+        # Fallback sicuro in caso di errore dell'API
+        return {
+            "suggestions": []
+        }
+
+def hitl_planner_node(state: BlogState):
+    """
+    Prende il suggerimento corrente e lo isola nello stato.
+    Il grafo si interromperà SUBITO DOPO questo nodo.
+    """
+    idx = state.get("current_suggestion_index", 0)
+    suggestions = state.get("suggestions", [])
+
+    if idx >= len(suggestions):
+        print("🏁 [HITL] Tutti i suggerimenti sono stati esaminati.")
+        return Command(goto=END)
+    
+    current_suggestion = suggestions[idx]
+
+    review_request = {
+        "azione": "accettazione stesura articolo",
+        "current_suggestion": current_suggestion,
+        "istruzioni": "Rispondi con: {'tipo': 'approva'} | {'tipo': 'annulla'}"
+    }
+
+    # Il grafo si congela qui
+    raw_resume_value = interrupt([review_request])
+    human_response = parse_human_response(raw_resume_value)
+    action = human_response.get("tipo", "annulla")
+
+    if action == "approva":
+        print("✅ [Human Review] Articolo approvato. Passo il controllo alla stesura...")
+        return Command(
+            goto="reasoner_subgraph",
+            update={
+                "intent": current_suggestion.intent, 
+                "subject": current_suggestion.subject, 
+                "specific_topic": current_suggestion.specific_topic,
+                "prompt_to_reasoner": current_suggestion.prompt_to_reasoner
+            }
+        )
+
+    else:
+        print(f"🔄 [Human Review] Articolo rifiutato.")
+
+        return Command(
+            goto="hitl_planner",
+            update={
+                "current_suggestion_index": idx + 1,
+            }
+        )
 
 async def writer_node(state: BlogState) -> dict:
     """
@@ -200,9 +308,7 @@ async def writer_node(state: BlogState) -> dict:
 
     # Fallback di sicurezza essenziale: blocca se non c'è assolutamente nessuna informazione
     if not research_material:
-        raise ValueError(
-            "[Writer] Errore critico: Il sottografo di ricerca non ha estratto alcuna informazione utile."
-        )
+        return {"final_article": "[Writer] Il sottografo di ricerca non ha estratto alcuna informazione utile, non è stato possibile scrivere l'articolo."}
 
     # 3. Routing interno del System Prompt basato sull'intent (Aggiornato per supportare entrambe le fonti)
     if intent.lower() == "esercizio":
@@ -254,7 +360,7 @@ async def human_review_node(state: BlogState) -> Command:
 
     review_request = {
         "azione": "revisione_articolo",
-        "anteprima": final_article[:500] + "...\n[Testo troncato per l'anteprima]",
+        "anteprima": final_article,
         "istruzioni": "Rispondi con: {'tipo': 'approva'} | {'tipo': 'modifica', 'feedback': '...'} | {'tipo': 'annulla'} | {'tipo': 'rigenera'} | {'tipo': 'nuova ricerca'}"
     }
 
@@ -265,11 +371,16 @@ async def human_review_node(state: BlogState) -> Command:
 
     if action == "approva":
         print("✅ [Human Review] Articolo approvato. Passo il controllo al nodo di salvataggio...")
-        return Command(goto="save_article")
+        return Command(
+            goto="save_article",
+            update={
+                "research_material": ""
+            }
+        )
 
     elif action == "modifica":
         feedback = human_response.get("feedback", "Revisione generale richiesta senza dettagli specifici.")
-        print(f"🔄 [Human Review] Modifica richiesta: {feedback[:100]}...")
+        print(f"🔄 [Human Review] Modifica richiesta: {feedback}...")
 
         return Command(
             goto="writer",
@@ -303,11 +414,9 @@ async def human_review_node(state: BlogState) -> Command:
             goto="reasoner_subgraph",
             update={
                 # Aggiorniamo la direttiva al reasoner in modo che il planner sappia cosa cercare di nuovo
-                "prompt_to_reasoner": f"ATTENZIONE (Ricerca aggiuntiva richiesta): {feedback}, "
-                    "decidere se svuotare il research_material precedente o se il reasoner ci aggiungerà roba",
+                # decidere se svuotare il research_material precedente o se il reasoner ci aggiungerà info
+                "prompt_to_reasoner": f"ATTENZIONE (Ricerca aggiuntiva richiesta): {feedback}",
                 "final_article": "",
-                # È importante resettare eventuali flag di stato del Reasoner se condivisi, ma LangGraph 
-                # gestirà il reset del sub-grafo all'ingresso se configurato correttamente.
             }
         )
 
@@ -315,7 +424,7 @@ async def human_review_node(state: BlogState) -> Command:
         print("🚫 [Human Review] Articolo annullato o risposta non riconosciuta.")
         return Command(goto=END)
 
-async def save_article_node(state: BlogState) -> dict:
+async def save_article_node(state: BlogState) -> Command:
     """
     Si attiva solo dopo l'approvazione. 
     Estrae metadati, calcola embeddings e salva nel Knowledge Graph tramite MCP.
@@ -326,6 +435,8 @@ async def save_article_node(state: BlogState) -> dict:
     intent = state.get("intent", "Unknown")
     subject = state.get("subject", "Unknown")
     specific_topic = state.get("specific_topic", "Unknown")
+    current_suggestion_index = state.get("current_suggestion_index", 0)
+    suggestions = state.get("suggestions", [])
     
     estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
     
@@ -374,9 +485,20 @@ async def save_article_node(state: BlogState) -> dict:
 
     except Exception as e:
         print(f"⚠️ [Save Node] Impossibile estrarre o salvare nel grafo: {str(e)}")
-        
-    return {}
 
+    
+    # Se siamo in modalità "Planner" e ci sono ancora suggerimenti da esaminare
+    if suggestions and (current_suggestion_index + 1) < len(suggestions):
+        print(f"🔄 [Post-Save] Articolo salvato con successo. Passiamo al suggerimento successivo...")
+        return Command(
+            goto="hitl_planner",
+            update={
+                "current_suggestion_index": current_suggestion_index + 1,
+            }
+        )
+    else:
+        print("🏁 [Post-Save] Nessun altro suggerimento rimasto o flusso singolo completato. Terminazione.")
+        return Command(goto=END)
 
 #utils
 def parse_human_response(raw: any) -> dict:

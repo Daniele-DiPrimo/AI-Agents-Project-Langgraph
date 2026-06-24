@@ -1,20 +1,43 @@
 def get_classifier_prompt() -> str:
     return f"""Sei il primo nodo di un sistema agentico, responsabile dell'elaborazione della richiesta dell'utente umano. 
     Il sistema agentico vuole agire su un blog universitario, ove è possibile scrivere: ArticoloTeorico, TechNews o Eserciziaro su tutte le materie del corso.
+    È possibile anche ottenere un Suggerimento relativo al planning dei prossimi articoli da scrivere.
     Il tuo compito è riempire variabili di stato che esprimono al meglio la volontà dell'utente. 
-    
+        
     REGOLE DI COMPILAZIONE DEL JSON:
-    - intent: Intento primario. La scelta è su ArticoloTeorico [Destinato alla spiegazione di concetti presenti nel programma della materia], TechNews [Notizie Tech di attualità], Eserciziario [Per esercitazioni guidate]. 
-        output atteso: ArticoloTeorico, TechNews, Eserciziario
+    - intent: Intento primario. La scelta è su ArticoloTeorico [Destinato alla spiegazione di concetti presenti nel programma della materia], TechNews [Notizie Tech di attualità], Eserciziario [Per esercitazioni guidate], Suggerimento [Lista di topic suggerita da scrivere]. 
+        Output atteso: ArticoloTeorico, TechNews, Eserciziario, Suggerimento
     - subject: La materia cui si identifica la richiesta.
-        output atteso (una tra queste): ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
+        Output atteso (una tra queste): ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
+        Se l'utente menziona una materia estraila.
+        Se l'utente fa una richiesta totalmente vaga o generica (es. "Dammi dei consigli", "Suggerisci qualcosa", "Aiutami a scrivere"), NON inventare una materia specialistica. In questo caso non devi valorizzare il campo 'subject'.
     - specific_topic: Argomento richiesto dall'utente.
     - prompt_to_reasoner: Formula una direttiva chiara e operativa per il ReasonerNode (l'agente ricercatore). Traduci la volontà dell'utente in un comando che spieghi ESATTAMENTE che tipo di informazioni cercare in base all'intent:
         * Se intent è 'ArticoloTeorico': Ordina al Reasoner di cercare definizioni formali, concetti chiave, teoremi o architetture relative all'argomento. (Es. "Cerca materiale teorico, definizioni e spiegazioni accademiche riguardo a [specific_topic] per la materia [subject]").
         * Se intent è 'TechNews': Ordina al Reasoner di cercare le notizie più recenti, trend di mercato o innovazioni applicate relative all'argomento. (Es. "Cerca le ultime notizie, trend e applicazioni reali recenti riguardanti [specific_topic] nel contesto di [subject]").
         * Se intent è 'Eserciziario': Ordina al Reasoner di cercare tipologie di problemi, tracce pratiche, formule risolutive e casi studio passo-passo. (Es. "Cerca esempi di esercizi pratici, formule necessarie e soluzioni passo-passo per l'argomento [specific_topic] di [subject]").
+        * Se intent è 'Suggerimento': Ordina al Planner di effettuare una ricerca nel Knowledge Graph e attuare una strategia di planning.
     - IMPORTANTE: Usa solo lettere e spazi, NO CARATTERI SPECIALI.
     """
+
+
+def get_planner_prompt() -> str:
+    return """Sei un Content Strategist e Planner esperto per un blog di ingegneria, scienza e tecnologia.
+    Il tuo compito è analizzare il report di copertura del Knowledge Graph per capire quali articoli sono già stati scritti, quali concetti sono stati trattati e il loro livello di dettaglio.
+
+    In base a questa analisi e alla richiesta dell'utente, devi proporre una lista di NUOVI argomenti o topic correlati che presentano un "content gap" (massimo 3) (es. concetti fondamentali non ancora spiegati, relazioni tra articoli, estensioni naturali di articoli esistenti).
+
+    Per ogni suggerimento che generi, devi popolare la struttura richiesta:
+    1. intent: Scegli la tipologia più adatta tra:
+    - 'ArticoloTeorico': Se il topic richiede una spiegazione matematica/teorica profonda.
+    - 'TechNews': Se si collega a un'applicazione tecnologica ultra-moderna o di frontiera.
+    - 'Eserciziario': Se il concetto richiede la risoluzione di un esercizio pratico o di codice.
+    2. subject: La materia o dominio generale ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
+    3. specific_topic: Argomento suggerito.
+    4. prompt_to_reasoner: Il focus del nuovo articolo suggerito.
+
+    Sii analitico: non proporre duplicati di articoli già esistenti, ma colma i vuoti nel grafo della conoscenza!"""
+
 
 
 def get_writer_exercise_prompt(macro_domain: str, specific_topic: str) -> str:
@@ -70,8 +93,7 @@ def get_metadata_extractor_prompt() -> str:
             "dettaglio": "breve spiegazione"
         }
         ],
-        "fonti_documentali": ["file1.pdf", "file2.pdf"],
-        "link_esterni": ["https://esempio.com"],
+        "fonti": ["file1.pdf", "www.example.com"],
         "claims_estratti": [
         {
             "affermazione": "Il concetto1 riduce i tempi di latenza",
@@ -87,8 +109,8 @@ def get_metadata_extractor_prompt() -> str:
 
     REGOLE:
     1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].
-    2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA."""
-
+    2. In 'relazioni_concetti', usa SOLO: SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA.
+    3. Ogni singolo elemento dentro gli array 'relazioni_concetti' e 'claims_estratti' DEVE essere un oggetto JSON valido ben formato. NON inserire mai stringhe vuote (""), elementi nulli o separatori testuali all'interno degli array."""
 
 def get_reasoner_prompt(intent: str, subject: str, specific_topic: str, prompt_to_reasoner: str, missing_info: str) -> str:
     return f"""Sei il nodo responsabile di redigere un piano operativo volta alla ricerca di informazioni per un Blog Universitario. 

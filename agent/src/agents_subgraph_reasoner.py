@@ -1,6 +1,5 @@
 from langchain_groq import ChatGroq
 from langchain_core.messages import  SystemMessage, HumanMessage
-from langgraph.types import Command
 
 from src.structures import CompletenessEvaluationSchema, SourceEvaluationSchema
 
@@ -39,11 +38,11 @@ def reasoner_node(state: ReasonerState) -> dict:
     is_krag_consulted = bool(tool_plan)
 
     if not is_krag_consulted:
-        print("🔍 [Planner] Primo avvio: Il K-RAG deve essere consultato.")
+        print("🔍 [Reasoner] Primo avvio: Il K-RAG deve essere consultato.")
         tool_disponibili.append(ricerca_krag_unificata)
         
     else:
-        print("⏭️ [Planner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
+        print("⏭️ [Reasoner] K-RAG già consultato. Rimuovo il tool per evitare loop.")
         tool_disponibili = blog_tools
 
     # Genera il prompt dinamicamente
@@ -60,7 +59,7 @@ def reasoner_node(state: ReasonerState) -> dict:
 
     answer = reasoner_llm_w_tools.invoke([SystemMessage(content=sys_prompt)])
 
-    print(f"📝 [Planner] Piano generato: {answer.tool_calls}")
+    print(f"📝 [Reasoner] Piano generato: {answer.tool_calls}")
  
     return {"tool_plan": answer.tool_calls}
 
