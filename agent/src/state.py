@@ -13,6 +13,8 @@ class BlogState(TypedDict):
     subject: str
     specific_topic: str
     prompt_to_reasoner: str
+    suggestions: list[dict]
+    current_suggestion_index: int
     research_material: str
     final_article: str
 

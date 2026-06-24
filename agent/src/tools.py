@@ -147,6 +147,49 @@ async def ricerca_krag_unificata(query: str) -> dict:
     except Exception as e:
         print(f"❌ [Errore Tool K-RAG]: {str(e)}")
         return {}
+    
+@tool
+async def analisi_gap_contenuti(materia_specifica: str = "") -> dict:
+    """
+    Usa questo strumento quando devi pianificare nuovi articoli o capire cosa manca nel blog.
+    Interroga la memoria storica del Knowledge Graph per estrarre tutti gli articoli già scritti,
+    i concetti trattati e il loro livello di dettaglio (claims).
+    
+    - materia_specifica: (Opzionale) Stringa esatta della materia su cui filtrare il report (es. "Fisica", "Matematica"). 
+                         Lasciare vuoto "" per analizzare l'intero grafo.
+    """
+    try:
+        print(f"📊 [Planner] Chiamata a MCP per analisi dei content gap. Filtro materia: '{materia_specifica}'")
+        
+        # Gestiamo il fallback della stringa vuota o None per i parametri MCP
+        arguments = {}
+        if materia_specifica and materia_specifica.strip():
+            arguments["materia_specifica"] = materia_specifica.strip()
+
+        # Chiama il tool registrato sul server MCP tramite FastMCP
+        risultato_testo = await call_mcp_tool(
+            tool_name="ricerca_topic_gap",
+            arguments=arguments
+        )
+        
+        # Ritorniamo una struttura coerente con gli altri tool di ricerca (es. ricerca_krag_unificata)
+        # in modo che il source_evaluator o i nodi successivi del grafo ricevano lo stesso formato.
+        return {
+            "query": materia_specifica if materia_specifica else "Tutte le materie",
+            "results": [
+                {
+                    "source": "Knowledge_Graph_Coverage_Report",
+                    "content": risultato_testo
+                }
+            ]
+        }
+                
+    except Exception as e:
+        print(f"❌ [Errore Tool Analisi Gap]: {str(e)}")
+        return {
+            "query": materia_specifica, 
+            "results": []
+        }
 
 
 blog_tools = [search_semantic_scholar, search_tool]

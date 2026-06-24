@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Literal, List
 
 class ClassificationSchema(BaseModel):
-    intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario"] = Field(
+    intent: Literal["ArticoloTeorico", "TechNews", "Eserciziario", "Suggerimento"] = Field(
         description="L'intento dell'utente"
     )
     subject: str = Field(
@@ -14,6 +14,9 @@ class ClassificationSchema(BaseModel):
     prompt_to_reasoner: str = Field(
         description="Le istruzioni dettagliate e ripulite da passare al nodo reasoner"
     )
+
+class PlannerSchema(BaseModel):
+    suggestions: List[ClassificationSchema]
 
 class SingleJudgment(BaseModel):
     source: str = Field(..., description="Il riferimenti alla fonte valutata")
@@ -54,4 +57,4 @@ class EstrazioneMetadatiArticolo(BaseModel):
     concetti_trovati: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
     relazioni_concetti: List[RelazioneArticolo] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
     fonti: List[str] = Field(description="Lista di tutte le fonti utilizzate per scrivere l'articolo")
-    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") # <-- NUOVO
+    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.")

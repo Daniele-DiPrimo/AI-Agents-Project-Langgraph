@@ -6,8 +6,6 @@ from src.agents_subgraph_reasoner import (
     completeness_evaluator_node,
     tool_executor_node
 )
-from src.tools import blog_tools
-
 
 def route_after_completeness(state: ReasonerState):
 
@@ -20,8 +18,6 @@ def route_after_completeness(state: ReasonerState):
     return "reasoner"
 
 reasoner_subgraph_builder = StateGraph(ReasonerState)
-
-executable_tools = [t for t in blog_tools]
 
 reasoner_subgraph_builder.add_node("reasoner", reasoner_node)
 reasoner_subgraph_builder.add_node("source_evaluator", source_evaluator_node)
