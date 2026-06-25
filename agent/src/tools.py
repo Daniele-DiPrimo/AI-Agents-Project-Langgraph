@@ -140,6 +140,48 @@ async def analisi_gap_contenuti(materia_specifica: str = "") -> dict:
             "query": materia_specifica, 
             "results": []
         }
+    
+
+@tool
+async def tool_ricerca_neo4j(embedded_title: list[float], top_k: int = 3) -> list[str]:
+    """
+    Interroga il Knowledge Graph in Neo4j tramite MCP usando un vettore di similarità.
+    Restituisce concetti correlati, affermazioni chiave e metadati degli articoli.
+    """
+    try:
+        print(f"🔍 [Neo4j] Chiamata a MCP per ricerca vettoriale.")
+        risultato = await call_mcp_tool(
+            tool_name="neo4j_search",
+            arguments={
+                "embedded_title": embedded_title,
+                "top_k": top_k
+            }
+        )
+        return risultato
+    except Exception as e:
+        print(f"❌ [Errore Tool Neo4j]: {str(e)}")
+        return []
+
+@tool
+async def tool_ricerca_rag(queries: list[str], subject: str, top_k: int = 3) -> dict:
+    """
+    Interroga il Vector Database (ChromaDB) tramite MCP per estrarre il testo dei documenti 
+    basandosi su una serie di query testuali.
+    """
+    try:
+        print(f"📚 [RAG] Chiamata a MCP per ricerca documenti su materia: {subject}")
+        risultato = await call_mcp_tool(
+            tool_name="rag_search",
+            arguments={
+                "queries": queries,
+                "subject": subject,
+                "top_k": top_k
+            }
+        )
+        return risultato
+    except Exception as e:
+        print(f"❌ [Errore Tool RAG]: {str(e)}")
+        return {"query": " | ".join(queries), "results": []}
 
 
 blog_tools = [search_semantic_scholar, search_tool]

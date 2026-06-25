@@ -1,17 +1,18 @@
-import time
+import asyncio
 
 from dotenv import load_dotenv
 import json
 
 from google import genai
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import interrupt, Command
 from langgraph.graph import END
-from src.tools import analisi_gap_contenuti
+from src.tools import analisi_gap_contenuti, tool_ricerca_neo4j, tool_ricerca_rag
 from src.mcp_client import call_mcp_tool
 
-from src.structures import ClassificationSchema, EstrazioneMetadatiArticolo, PlannerSchema, ChromaQuerySchema
+from src.structures import ClassificationSchema, ArticleMetadataExtractionSchema, PlannerSchema, ChromaQuerySchema
 from src.state import BlogState
 
 from src.prompts import (
@@ -23,16 +24,13 @@ from src.prompts import (
     get_information_gathering_prompt
 )
 
-from src.neo4j_client import neo4j_search
-from src.chroma_client import rag_search
-
 load_dotenv()
 
 classifier_llm = ChatGroq(model="qwen/qwen3-32b", temperature=0)
 planner_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 writer_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
+#writer_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
 google_client = genai.Client()
-
 
 
 
@@ -78,9 +76,8 @@ def classifier_node(state: BlogState):
         return Command(goto=END)
 
 
-import time
 
-def information_gathering_node(state: BlogState): 
+async def information_gathering_node(state: BlogState): 
     """
     Nodo responsabile dell'estrazione di informazioni dal knowledge graph e k-RAG.
     """
@@ -100,7 +97,7 @@ def information_gathering_node(state: BlogState):
     
     for attempt in range(max_retries):
         try: 
-            embedding_result = google_client.models.embed_content(
+            embedding_result = await google_client.aio.models.embed_content(
                 model = "gemini-embedding-2", # Nome modello corretto
                 contents = current_title
             )
@@ -113,26 +110,30 @@ def information_gathering_node(state: BlogState):
             
             if "429" in error or "RESOURCE_EXHAUSTED" in error:
                 print("   ⏳ Quota raggiunta (429). Pausa di 30 secondi e riprovo...")
-                time.sleep(30)
+                await asyncio.sleep(30) # <-- Modificato per async
             elif "503" in error:
                 print("   ⚠️ Server Google intasati (503). Pausa di 10 secondi e riprovo...")
-                time.sleep(10) 
+                await asyncio.sleep(10) # <-- Modificato per async
             else:
+                print("Errore durante la generazione dell'embedding ---", error)
                 break # Errore diverso (es. chiave API errata), inutile riprovare
 
     # Sicurezza: se tutti i tentativi sono falliti
     if not embedding_result:
         print("🔥 Fallimento critico: impossibile generare l'embedding.")
-        return {"neo4j_context": "Nessuno storico.", "graph_results": []}
+        return {"neo4j_context": "Nessuno storico.", "graph_results": {}}
 
     # =========================================================
-    # 2. ESTRAZIONE DA NEO4J
+    # 2. ESTRAZIONE DA NEO4J (TRAMITE MCP TOOL)
     # =========================================================
     embedded_title = embedding_result.embeddings[0].values
-    neo4j_result = neo4j_search(embedded_title, 3)
     
-    # Assicuriamoci di formattare il risultato come stringa per il prompt
-
+    # Eseguiamo il tool LangChain in modo asincrono passandogli il dizionario degli argomenti
+    neo4j_result = await tool_ricerca_neo4j.ainvoke({
+        "embedded_title": embedded_title, 
+        "top_k": 3
+    })
+    
     # =========================================================
     # 3. CICLO DI RETRY PER L'LLM (GENERAZIONE QUERY)
     # =========================================================
@@ -140,7 +141,7 @@ def information_gathering_node(state: BlogState):
     
     for attempt in range(max_retries):
         try:
-            response = google_client.models.generate_content(
+            response = await google_client.aio.models.generate_content(
                 model = "gemini-2.5-flash", 
                 contents = get_information_gathering_prompt(intent, subject, specific_topic, neo4j_result),
                 config = {
@@ -157,11 +158,12 @@ def information_gathering_node(state: BlogState):
             
             if "429" in error or "RESOURCE_EXHAUSTED" in error:
                 print("   ⏳ Quota raggiunta (429). Pausa di 30 secondi e riprovo...")
-                time.sleep(30)
+                await asyncio.sleep(30) # <-- Modificato per async
             elif "503" in error:
                 print("   ⚠️ Server Google intasati (503). Pausa di 10 secondi e riprovo...")
-                time.sleep(20) 
+                await asyncio.sleep(20) # <-- Modificato per async
             else:
+                print("Errore durante la generazione delle query ---", error)
                 break # Errore diverso, inutile riprovare
 
     # Sicurezza: se tutti i tentativi sono falliti
@@ -173,12 +175,17 @@ def information_gathering_node(state: BlogState):
         }
 
     # =========================================================
-    # 4. ESECUZIONE QUERY SU CHROMA E AGGIORNAMENTO STATO
+    # 4. ESECUZIONE QUERY SU CHROMA E AGGIORNAMENTO STATO (TRAMITE MCP TOOL)
     # =========================================================
     queries = response.parsed.queries
     print(f"\n🎯 QUERY GENERATE: {queries}\n" )
 
-    chroma_result = rag_search(queries=queries, subject=subject)
+    # Eseguiamo il tool LangChain RAG in modo asincrono
+    chroma_result = await tool_ricerca_rag.ainvoke({
+        "queries": queries, 
+        "subject": subject,
+        "top_k": 3
+    })
     print(f"\n📚 RISULTATI CHROMA: {chroma_result}\n")
 
     return {
@@ -186,21 +193,22 @@ def information_gathering_node(state: BlogState):
         "graph_results" : chroma_result
     }
 
-    #da qua in poi matteo, manca un def
+
+
 async def planner_node(state: BlogState):
 # 1. Recuperiamo l'eventuale materia (subject) corrente dallo stato per filtrare il grafo
 # Se non c'è, passiamo una stringa vuota per analizzare tutto l'ecosistema
-    materia_corrente = state.get("subject", "")
+    subject = state.get("subject", "")
     
     # 2. Chiamata asincrona al tool MCP esposto in LangChain
     try:
-        report_tool = await analisi_gap_contenuti.ainvoke({"materia_specifica": materia_corrente})
+        report_tool = await analisi_gap_contenuti.ainvoke({"materia_specifica": subject})
         print(f"REPORT TOOL: {report_tool}")
         # Estraiamo il contenuto testuale del report generato dal server MCP
-        contesto_grafo = report_tool["results"][0]["content"]
+        graph_context = report_tool["results"][0]["content"]
     except Exception as e:
         print(f"⚠️ [Planner] Errore durante il recupero del report dal grafo: {e}")
-        contesto_grafo = "Nessun dato sul grafo disponibile a causa di un errore tecnico."
+        graph_context = "Nessun dato sul grafo disponibile a causa di un errore tecnico."
 
     # 3. Configurazione dell'LLM strutturato
     planner_llm_structured = planner_llm.with_structured_output(PlannerSchema, method="json_mode")
@@ -208,19 +216,19 @@ async def planner_node(state: BlogState):
     system_prompt = get_planner_prompt()
     
     # Costruiamo il messaggio per l'interazione umana includendo l'input dell'utente e lo stato del grafo
-    prompt_utente = ""
+    user_prompt = ""
     if "messages" in state and state["messages"]:
-        prompt_utente = state["messages"][-1].content
+        user_prompt = state["messages"][-1].content
     elif "original_prompt" in state:
-        prompt_utente = state["original_prompt"]
+        user_prompt = state["original_prompt"]
 
-    user_content = f""" Richiesta originale dell'utente: {prompt_utente}
-                        STATO ATTUALE DEL KNOWLEDGE GRAPH (Articoli già scritti e concetti): {contesto_grafo}
+    user_content = f""" Richiesta originale dell'utente: {user_prompt}
+                        STATO ATTUALE DEL KNOWLEDGE GRAPH (Articoli già scritti e concetti): {graph_context}
                         """
 
     try:
         # 4. Invocazione del modello
-        risultato = await planner_llm_structured.ainvoke([
+        result = await planner_llm_structured.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_content)
         ])
@@ -229,14 +237,16 @@ async def planner_node(state: BlogState):
         # Di solito in LangGraph si aggiorna una lista di suggerimenti o si passa il controllo al nodo successivo.
         # Ritorniamo il dizionario che aggiornerà le chiavi dello stato.
         return {
-            "suggestions": risultato.suggestions
+            "suggestions": result.suggestions,
+            "plan_justification": result.plan_justification
         }
 
     except Exception as e:
         print(f"❌ [Planner] Errore durante la generazione dei suggerimenti con l'LLM: {e}")
         # Fallback sicuro in caso di errore dell'API
         return {
-            "suggestions": []
+            "suggestions": [],
+            "plan_justification": "Nessuna giustificazione disponibile a causa di un errore tecnico."
         }
 
 def hitl_planner_node(state: BlogState):
@@ -273,7 +283,8 @@ def hitl_planner_node(state: BlogState):
                 "subject": current_suggestion.subject, 
                 "specific_topic": current_suggestion.specific_topic,
                 "prompt_to_reasoner": current_suggestion.prompt_to_reasoner,
-                "iterations" : 0
+                "iterations" : 0,
+                "current_suggestion_index": idx + 1
             }
         )
 
@@ -335,10 +346,10 @@ async def writer_node(state: BlogState) -> dict:
                 llm_messages.append(last_msg)
 
     final_draft = await writer_llm.ainvoke(llm_messages)
-    testo_generato = final_draft.content
+    generated_text = final_draft.content
     print("✅ [Writer] Stesura completata con successo basata su K-RAG totale.")
 
-    return {"final_article": testo_generato}
+    return {"final_article": generated_text}
 
 
 
@@ -419,6 +430,8 @@ async def human_review_node(state: BlogState) -> Command:
         print("🚫 [Human Review] Articolo annullato o risposta non riconosciuta.")
         return Command(goto=END)
 
+
+
 async def save_article_node(state: BlogState) -> Command:
     """
     Si attiva solo dopo l'approvazione. 
@@ -430,10 +443,8 @@ async def save_article_node(state: BlogState) -> Command:
     intent = state.get("intent", "Unknown")
     subject = state.get("subject", "Unknown")
     specific_topic = state.get("specific_topic", "Unknown")
-    current_suggestion_index = state.get("current_suggestion_index", 0)
-    suggestions = state.get("suggestions", [])
     
-    estrattore_metadati = writer_llm.with_structured_output(EstrazioneMetadatiArticolo, method="json_mode")
+    metadata_extractor = writer_llm.with_structured_output(ArticleMetadataExtractionSchema, method="json_mode")
     
     try:
         system_prompt = get_metadata_extractor_prompt()
@@ -442,58 +453,44 @@ async def save_article_node(state: BlogState) -> Command:
             HumanMessage(content=f"Estrai i metadati da questo testo in formato JSON:\n{final_article}")
         ]
 
-        risultato_estrazione = await estrattore_metadati.ainvoke(messaggi_estrazione)
+        extraction_result = await metadata_extractor.ainvoke(messaggi_estrazione)
         
-        concetti_collegati = risultato_estrazione.concetti_trovati
-        fonti = risultato_estrazione.fonti
-        relazioni_estratte = [rel.model_dump() for rel in risultato_estrazione.relazioni_concetti]
-        claims_estratte = [claim.model_dump() for claim in risultato_estrazione.claims_estratti]
+        concepts = extraction_result.concepts
+        sources = extraction_result.sources
+        concepts_relationships = [rel.model_dump() for rel in extraction_result.concepts_relationships]
+        claims = [claim.model_dump() for claim in extraction_result.claims]
         
-        prefisso = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews" 
-        titolo_nodo = f"[{prefisso}] {specific_topic}"
+        prefix = "Eserciziario" if intent.lower() == "eserciziario" else "ArticoloTeorico" if intent.lower() == "articoloteorico" else "TechNews" 
+        node_title = f"[{prefix}] {specific_topic}"
 
         print("🧠 [Save Node] Calcolo dell'embedding per l'articolo completo...")
-        testo_da_embeddare = f"Titolo: {titolo_nodo}\n\n"
+        text_to_embed = f"Titolo: {node_title}\n\n"
         
-        risultato_embedding = google_client.models.embed_content(
+        embedding_result = await google_client.aio.models.embed_content(
             model="gemini-embedding-2",
-            contents=testo_da_embeddare
+            contents=text_to_embed
         )
-        vettore_articolo = risultato_embedding.embeddings[0].values
+        title_embedding = embedding_result.embeddings[0].values
 
-        print(f"🔗 [Save Node] Connessione a MCP per salvare '{titolo_nodo}'...")
+        print(f"🔗 [Save Node] Connessione a MCP per salvare '{node_title}'...")
         
-        risultato_salvataggio = await call_mcp_tool(
-            tool_name="inserisci_articolo_agente",
+        save_result = await call_mcp_tool(
+            tool_name="insert_article",
             arguments={
-                "titolo": titolo_nodo,
-                "contenuto": final_article,
-                "concetti_spiegati": concetti_collegati,
-                "relazioni_concetti": relazioni_estratte,
-                "materia": subject,
-                "vettore": vettore_articolo,
-                "fonti": fonti,
-                "claims_articolo": claims_estratte 
+                "title": node_title,
+                "content": final_article,
+                "concepts": concepts,
+                "concepts_relationships": concepts_relationships,
+                "subject": subject,
+                "title_embedding": title_embedding,
+                "sources": sources,
+                "claims": claims 
             }
         )
-        print(f"✅ [Save Node] Successo: {risultato_salvataggio}")
+        print(f"✅ [Save Node] Successo: {save_result}")
 
     except Exception as e:
         print(f"⚠️ [Save Node] Impossibile estrarre o salvare nel grafo: {str(e)}")
-
-    
-    # Se siamo in modalità "Planner" e ci sono ancora suggerimenti da esaminare
-    if suggestions and (current_suggestion_index + 1) < len(suggestions):
-        print(f"🔄 [Post-Save] Articolo salvato con successo. Passiamo al suggerimento successivo...")
-        return Command(
-            goto="hitl_planner",
-            update={
-                "current_suggestion_index": current_suggestion_index + 1,
-            }
-        )
-    else:
-        print("🏁 [Post-Save] Nessun altro suggerimento rimasto o flusso singolo completato. Terminazione.")
-        return Command(goto=END)
 
 #utils
 def parse_human_response(raw: any) -> dict:

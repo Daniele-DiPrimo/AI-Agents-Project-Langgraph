@@ -25,7 +25,13 @@ def get_planner_prompt() -> str:
     return """Sei un Content Strategist e Planner esperto per un blog di ingegneria, scienza e tecnologia.
     Il tuo compito è analizzare il report di copertura del Knowledge Graph per capire quali articoli sono già stati scritti, quali concetti sono stati trattati e il loro livello di dettaglio.
 
-    In base a questa analisi e alla richiesta dell'utente, devi proporre una lista di NUOVI argomenti o topic correlati che presentano un "content gap" (massimo 3) (es. concetti fondamentali non ancora spiegati, relazioni tra articoli, estensioni naturali di articoli esistenti).
+    In base all'analisi del grafo e alla richiesta dell'utente, devi sviluppare e dimostrare una strategia editoriale coerente proponendo una lista di NUOVI argomenti (massimo 3).
+    
+    Le tue proposte devono rigorosamente:
+    - Evitare ripetizioni e ridondanze: non proporre MAI articoli che si sovrappongono a concetti già presenti nel Knowledge Graph.
+    - Individuare e colmare i "content gap": focalizzati su concetti fondamentali mancanti, relazioni chiave tra articoli esistenti o naturali estensioni di argomenti già trattati.
+    
+    Inoltre, devi giustificare logicamente la selezione e l'ordine in cui proponi questi nuovi argomenti.
 
     Per ogni suggerimento che generi, devi popolare la struttura richiesta:
     1. intent: Scegli la tipologia più adatta tra:
@@ -35,13 +41,15 @@ def get_planner_prompt() -> str:
     2. subject: La materia o dominio generale ["Algebra Lineare e Geometria", "Analisi Matematica I", "Database", "Economia Applicata Ingegneria", "Fisica I", "Fondamenti di Programmazione", "Analisi Matematica II", "Elettrotecnica", "Fisica II", "Internet e Sicurezza", "Machine Learning", "Programmazione Orientata agli Oggetti", "Sistemi Operativi", "Teoria dei Segnali", "Automatica", "Computer Architectures", "Comunicazioni Digitali", "Elettronica", "Software Design and Web Programming"].
     3. specific_topic: Argomento suggerito.
     4. prompt_to_reasoner: Il focus del nuovo articolo suggerito.
-    Genera la lista di suggerimenti in formato strutturato basandoti sui dati reali del grafo sopra riportati.
+    
+    Genera la risposta in formato strutturato basandoti sui dati reali del grafo sopra riportati.
     REGOLA FONDAMENTALE (CRITICA): 
     NON generare testo libero. Devi OBBLIGATORIAMENTE restituire la tua risposta in puro formato JSON.
-    ATTENZIONE ALLA SINTASSI: Il tuo JSON DEVE essere un singolo oggetto (dizionario) contenente la chiave radice "suggestions". 
+    ATTENZIONE ALLA SINTASSI: Il tuo JSON DEVE essere un singolo oggetto (dizionario) contenente le chiavi "plan_justification" e "suggestions". 
     NON restituire un array direttamente. Usa ESATTAMENTE questa struttura:
 
     {{
+        "plan_justification": "Spiega il motivo per cui hai scelto questi specifici argomenti basandoti sul Knowledge Graph e giustifica l'ordine in cui li hai proposti...",
         "suggestions": [
             {{
                 "intent": "...",
@@ -97,22 +105,22 @@ def get_writer_article_prompt(intent: str, macro_domain: str, specific_topic: st
 
 
 def get_metadata_extractor_prompt() -> str:
-    schema_richiesto = """
+    schema = """
     {
-        "concetti_trovati": ["concetto1", "concetto2"],
-        "relazioni_concetti": [
+        "concepts": ["concetto1", "concetto2"],
+        "concepts_relationships": [
         {
-            "origine": "concetto1", 
-            "tipo_relazione": "SI_BASA_SU", 
-            "destinazione": "concetto2", 
-            "dettaglio": "breve spiegazione"
+            "origin": "concetto1", 
+            "relationship_type": "SI_BASA_SU", 
+            "destination": "concetto2", 
+            "detail": "breve spiegazione"
         }
         ],
-        "fonti": ["file1.pdf", "www.example.com"],
-        "claims_estratti": [
+        "sources": ["file1.pdf", "www.example.com"],
+        "claims": [
         {
-            "affermazione": "Il concetto1 riduce i tempi di latenza",
-            "concetto_riferimento": "concetto1"
+            "claim": "Il concetto1 riduce i tempi di latenza",
+            "concept_reference": "concetto1"
         }
         ]
     }"""
@@ -120,7 +128,7 @@ def get_metadata_extractor_prompt() -> str:
     return f"""Sei un estrattore dati specializzato. Analizza l'articolo fornito. 
     DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido. 
     Il tuo JSON DEVE usare ESATTAMENTE queste chiavi e rispettare questa struttura:
-    {schema_richiesto}
+    {schema}
 
     REGOLE:
     1. Se non ci sono file PDF, link o claims, restituisci array vuoti [].
@@ -197,7 +205,7 @@ def get_information_gathering_prompt(intent: str, subject: str, specific_topic: 
     """
     Genera il prompt per l'LLM incaricato di fare Query Expansion verso ChromaDB.
     """
-    prompt = f"""Sei un esperto ricercatore accademico e analista dati.
+    return f"""Sei un esperto ricercatore accademico e analista dati.
     Il tuo compito è formulare query di ricerca perfette per estrarre materiale didattico da un database vettoriale (Vector DB) per un k-rag universitario.
 
     DEVI CERCARE MATERIALE PER SCRIVERE QUESTO:
@@ -227,4 +235,3 @@ def get_information_gathering_prompt(intent: str, subject: str, specific_topic: 
 
     Rispondi SOLO seguendo lo schema JSON richiesto, senza testo aggiuntivo.
     """
-    return prompt

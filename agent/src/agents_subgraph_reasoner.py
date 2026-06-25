@@ -216,7 +216,7 @@ def completeness_evaluator_node(state: ReasonerState) -> dict:
         research_material += f"**Testo grezzo dal web:**\n> {s.get('content', 'Nessun testo estratto.')}\n\n"
         research_material += "---\n\n"
 
-        is_complete = answer.is_complete or iterations >= MAX_ITERATIONS
+    is_complete = answer.is_complete or iterations >= MAX_ITERATIONS
   
     return {
         "is_complete": True if is_complete else False, 

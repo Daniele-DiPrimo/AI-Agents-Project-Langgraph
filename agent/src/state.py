@@ -14,6 +14,7 @@ class BlogState(TypedDict):
     specific_topic: str
     prompt_to_reasoner: str
     suggestions: list[dict]
+    plan_justification: str
     current_suggestion_index: int
     research_material: str
     final_article: str
@@ -36,7 +37,6 @@ class ReasonerState(TypedDict):
     approved_sources: Annotated[list[dict], operator.add]
     not_approved_sources: Annotated[list[dict], operator.add]
     research_material: str
-    visited_urls: Annotated[list[str], operator.add]
 
     # --- Flag di controllo flusso
     sources_evaluated: bool

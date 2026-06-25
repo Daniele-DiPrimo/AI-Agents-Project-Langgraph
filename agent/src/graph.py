@@ -42,7 +42,7 @@ builder.add_conditional_edges(
 )
 
 builder.add_edge("planner", "hitl_planner")
-#builder.add_edge("hitl_planner", "information_gathering") 
+#builder.add_edge("hitl_planner", "information_gathering") #hitl_planner decide dinamicamente tramite Command() se andare a "hitl_planner" o "information_gathering"
 builder.add_edge("information_gathering", "reasoner_subgraph")
 builder.add_edge("reasoner_subgraph", "writer")
 builder.add_edge("writer", "human_review")

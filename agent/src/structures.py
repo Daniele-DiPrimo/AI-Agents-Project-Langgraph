@@ -17,6 +17,9 @@ class ClassificationSchema(BaseModel):
 
 class PlannerSchema(BaseModel):
     suggestions: List[ClassificationSchema]
+    plan_justification: str = Field(
+        description="Giustifica l'ordine e la selezione degli argomenti proposti. Spiega perché questi topic sono stati scelti rispetto al grafo della conoscenza e qual è la logica dietro la loro sequenza."
+    )
 
 class SingleJudgment(BaseModel):
     source: str = Field(..., description="Il riferimenti alla fonte valutata")
@@ -49,21 +52,21 @@ class SearchSchema(BaseModel):
         description="La query di ricerca in inglese."
     )
 
-class RelazioneArticolo(BaseModel):
-    origine: str = Field(description="Nome del concetto di origine")
-    tipo_relazione: str = Field(description="SOLO TRA: [APPARTIENE_A, SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA, SPIEGA, SOSTIENE, RIGUARDA]")
-    destinazione: str = Field(description="Nome del concetto di destinazione")
-    dettaglio: str = Field(description="Contesto specifico in poche parole")
+class ArticleRelationshipSchema(BaseModel):
+    origin: str = Field(description="Nome del concetto di origine")
+    relationship_type: str = Field(description="SOLO TRA: [APPARTIENE_A, SI_BASA_SU, È_UN_TIPO_DI, COMPOSTO_DA, RISOLVE_USA, SPIEGA, SOSTIENE, RIGUARDA]")
+    destination: str = Field(description="Nome del concetto di destinazione")
+    detail: str = Field(description="Contesto specifico in poche parole")
 
-class ClaimArticolo(BaseModel):
-    affermazione: str = Field(description="Una frase completa che esprime una tesi, una regola o un fatto chiave (max 15 parole).")
-    concetto_riferimento: str = Field(description="Il nome esatto del concetto teorico a cui si riferisce.")
+class ArticleClaimSchema(BaseModel):
+    claim: str = Field(description="Una frase completa che esprime una tesi, una regola o un fatto chiave (max 15 parole).")
+    concept_reference: str = Field(description="Il nome esatto del concetto teorico a cui si riferisce.")
 
-class EstrazioneMetadatiArticolo(BaseModel):
-    concetti_trovati: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
-    relazioni_concetti: List[RelazioneArticolo] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
-    fonti: List[str] = Field(description="Lista di tutte le fonti utilizzate per scrivere l'articolo")
-    claims_estratti: List[ClaimArticolo] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") 
+class ArticleMetadataExtractionSchema(BaseModel):
+    concepts: List[str] = Field(description="Lista dei concetti teorici spiegati nell'articolo.")
+    concepts_relationships: List[ArticleRelationshipSchema] = Field(description="Relazioni logiche tra i concetti trovati in questo articolo.")
+    sources: List[str] = Field(description="Lista di tutte le fonti utilizzate per scrivere l'articolo")
+    claims: List[ArticleClaimSchema] = Field(description="Le affermazioni chiave o conclusioni fatte nell'articolo.") 
 
 class QueryExpansionSchema(BaseModel):
 
